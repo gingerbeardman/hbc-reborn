@@ -32,6 +32,8 @@
 #include "dialogs.h"
 #include "browser.h"
 #include "home.h"
+#include "netdiag.h"
+#include "netrecovery.h"
 #include "loader.h"
 #include "devnet.h"
 #include "zmem.h"
@@ -345,6 +347,10 @@ void main_real(void) {
 	bool ahb_access;
 	bool no_ios_reload;
 	bool launch_bootmii;
+	bool reload_hbc = false;
+	bool reset_network_ios = false;
+	bool network_recovery_pending = false;
+	s32 network_recovery_ios = -1;
 
 	u64 frame;
 	bool exit_about;
@@ -415,6 +421,26 @@ void main_real(void) {
 	devnet_set_init_ms(ticks_to_millisecs(diff_ticks(hbc_start, gettime())));
 
 	while (!should_exit) {
+		// A network cleanup has hung inside IOS (netrecovery.c): the worker
+		// cannot be stopped, so count down and reload the installed channel
+		// with a fresh IOS. A failed start alone never comes here; the TCP
+		// thread's own retry handles that.
+		if (network_recovery_pending || netrecovery_take_reload()) {
+			network_recovery_pending = false;
+			netdiag_event("Network cleanup stuck: reload countdown");
+			if (home_can_reload()) {
+				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
+					"The network stopped responding.\nHBC will restart automatically.",
+					0, NET_POPUP_TIMEOUT_S);
+				reload_hbc = reset_network_ios = true;
+				should_exit = true;
+				break;
+			}
+			netdiag_event("Network cleanup stuck: no installed channel to reload");
+			show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
+				"The network stopped responding.\nStart HBC again from the Wii Menu.",
+				0, NET_POPUP_TIMEOUT_S);
+		}
 #ifdef GDBSTUB
 		if (gdb) {
 			gprintf("attach gdb now!\n");
@@ -539,6 +565,16 @@ void main_real(void) {
 
 			case HOME_NETWORK:
 				loader_tcp_restart ();
+				break;
+
+			case HOME_NETWORK_RECOVERY:
+				network_recovery_pending = true;
+				break;
+
+			case HOME_RELOAD:
+				netdiag_event("Reload HBC requested: %016llx", (unsigned long long) MY_TITLEID);
+				reload_hbc = true;
+				should_exit = true;
 				break;
 
 			case HOME_PLAYGROUND:
@@ -882,7 +918,20 @@ void main_real(void) {
 	// because the tcp thread is the only one that can block after the exit
 	// command is sent, deinit it first. this gives the other threads a chance
 	// to do any pending work if the tcp thread does block.
-	loader_deinit ();
+	netdiag_event("Leaving HBC: app %s, reload %d, restart %d, shutdown %d, bootmii %d",
+		reloced ? launch_dir : "(none)", reload_hbc, restart, shutdown, launch_bootmii);
+	if (!loader_deinit () && reload_hbc) {
+		// Never start the network again over libogc's unfinished state.
+		reset_network_ios = true;
+		loader_tcp_park ();
+	}
+	if (reset_network_ios) {
+		network_recovery_ios = IOS_GetVersion();
+		netdiag_event("Network recovery: IOS%d reloads before the channel",
+			(int) network_recovery_ios);
+	}
+	// The last write before the card goes: nothing touches SD after this.
+	netdiag_flush(true);
 #ifdef ENABLE_UPDATES
         http_deinit ();
 #endif
@@ -902,6 +951,25 @@ void main_real(void) {
 
 	settings.sideways_remotes = hbc_agent_sideways_remotes();
 	settings_save();
+
+	if (reload_hbc) {
+		if (reset_network_ios) {
+			// Skips the network cleanup that hung: the old worker stays
+			// parked with its buffers until the channel starts again.
+			s32 result = __IOS_LaunchNewIOS(network_recovery_ios);
+			gprintf("network recovery IOS reload: %d\n", result);
+			(void) result;
+		}
+		// The same way back an app takes: this build's stub, told to start
+		// the installed channel.
+		memcpy((void *) 0x80001800, stub_bin, stub_bin_size);
+		*conf_title_id = MY_TITLEID;
+		*conf_magic = STUB_MAGIC;
+		DCFlushRange((void *) 0x80001800, stub_bin_size);
+		DCFlushRange(conf_magic, 16);
+		ICInvalidateRange((void *) 0x80001800, stub_bin_size);
+		loader_exec((entry_point) 0x80001800);
+	}
 
 	if (launch_bootmii) {
 		gprintf ("launching BootMii\n");

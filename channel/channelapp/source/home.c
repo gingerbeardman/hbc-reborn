@@ -25,6 +25,8 @@
 #include "controls.h"
 #include "gfx.h"
 #include "loader.h"
+#include "netdiag.h"
+#include "netrecovery.h"
 #include "miires.h"
 #include "avatar.h"
 #include "panic.h"
@@ -44,6 +46,7 @@
 static char version_text[32];
 static char ios_text[32];
 static char network_text[40];
+static bool can_reload;
 
 // What the user picked, for main() to carry out once the overlay is closed.
 static volatile home_action picked;
@@ -78,10 +81,12 @@ static hbc_agent_item hbc_items[] = {
 	{ "Exit to System Menu", NULL, pick, (void *) HOME_SYSTEM_MENU, HBC_AGENT_ITEM_CLOSE },
 	{ "Shutdown", NULL, pick, (void *) HOME_SHUTDOWN, HBC_AGENT_ITEM_CLOSE },
 	{ "Restart network", NULL, pick, (void *) HOME_NETWORK, HBC_AGENT_ITEM_CLOSE },
+	{ "Reload HBC", NULL, pick, (void *) HOME_RELOAD, HBC_AGENT_ITEM_CLOSE },
 	{ "Save Mii faces", NULL, save_mii_faces, NULL, 0 },
 	{ "Mii playground", NULL, pick, (void *) HOME_PLAYGROUND, HBC_AGENT_ITEM_CLOSE },
 };
 #define BOOTMII_ITEM 4
+#define RELOAD_ITEM 8
 
 // ---- Exit and DEV hooks --------------------------------------------------
 
@@ -126,6 +131,13 @@ static bool save(void *user) {
 static void signal_loader(void *user) {
 	(void) user;
 	loader_signal_threads();
+	// A network cleanup that never returned: main() shows the countdown and
+	// reloads the channel, which it cannot do while the overlay is open.
+	if (netrecovery_take_reload()) {
+		netdiag_event("Network cleanup stuck: closing HOME for the reload");
+		picked = HOME_NETWORK_RECOVERY;
+		hbc_agent_home_close();
+	}
 }
 
 // ---- BootMii --------------------------------------------------------------
@@ -200,10 +212,23 @@ void home_init(void) {
 	if (!bootmii_is_installed(TITLEID_BOOTMII))
 		hbc_items[BOOTMII_ITEM].flags |= HBC_AGENT_ITEM_DISABLED;
 
+	// Reload HBC starts the installed channel again. A DOL sent over Wiiload
+	// may run as another title, so only an installed channel is relaunched.
+	{
+		u32 contents = 0;
+		can_reload = ES_GetTitleContentsCount(MY_TITLEID, &contents) >= 0 && contents;
+	}
+	if (!can_reload)
+		hbc_items[RELOAD_ITEM].flags |= HBC_AGENT_ITEM_DISABLED;
+
 	// Slot 0 is the button left of Exit. The right one (slot 1) keeps the
 	// agent's default, Shot, which saves the frame to sd:/screenshots.
 	hbc_agent_set_slot_menu(0, "HBC", "The Homebrew Channel", hbc_items,
 							sizeof(hbc_items) / sizeof(hbc_items[0]));
+}
+
+bool home_can_reload(void) {
+	return can_reload;
 }
 
 bool home_requested(u32 buttons_down, u32 buttons_held) {
@@ -229,7 +254,8 @@ home_action home_show(void) {
 	u32 size = VIDEO_GetFrameBufferSize(vmode);
 	u8 *fb0 = (u8 *) HOME_FB_ADDR;
 	u8 *fb1 = fb0 + ((size + 31) & ~31);
-	u32 ip = net_gethostip();
+	// The cached address: no IOS network request while a cleanup may hang.
+	u32 ip = loader_tcp_initialized() ? loader_net_ip() : 0;
 
 	// Refresh the info rows; the overlay copies them each frame.
 	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_VERSION_STR);

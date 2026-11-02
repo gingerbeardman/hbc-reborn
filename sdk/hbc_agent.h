@@ -461,6 +461,10 @@ s32 hbc_agent_home(const struct _gx_rmodeobj *rmode);
  * framebuffer when the heap only has MEM2 left. */
 s32 hbc_agent_home_fb(const struct _gx_rmodeobj *rmode, void *fb0, void *fb1);
 
+/* Close the open overlay, returning control to the app. Call from its
+ * on_frame callback when the app needs to perform recovery outside it. */
+void hbc_agent_home_close(void);
+
 /* True once when `hbc.py key h` asked for the overlay: check it next to the
  * HOME button, `if ((down & WPAD_BUTTON_HOME) || hbc_agent_home_pending())`. */
 bool hbc_agent_home_pending(void);

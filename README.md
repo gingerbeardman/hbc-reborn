@@ -335,12 +335,24 @@ framebuffers and handling Exit through HBC's own shutdown. Its HBC slot
 holds what the old HOME menu had: HBC's and IOS's versions, the Wii's IP,
 About, Launch BootMii, Exit to System Menu, and Shutdown, plus Restart
 network, which shuts the network down and joins it again (for a Wi-Fi
-connection that went stale), and Save Mii faces, which copies the Wii
+connection that went stale), Reload HBC, which starts the installed
+channel again (greyed out when there is none to start), and Save Mii faces, which copies the Wii
 Menu's Mii face models (`RFL_Res.dat`) and the Mii Channel's male and
 female bodies with their animations (`maleBody.brres`,
 `femaleBody.brres`) and effects (`effect_nigaoe.breff`, `.breft`) to
 `sd:/mii` for apps that draw Miis
 ([docs/mii.md](docs/mii.md#the-face-models-rfl_resdat)).
+
+When the network fails to start, HBC tries again by itself. Each start
+has 30 seconds in all, and Restart network or launching an app cancels
+one that IOS never finishes. Shutting the network down can itself hang
+inside IOS (libogc's `net_deinit` waits for a reply that never comes); if
+it has not returned after 5 seconds, HBC says so for 10 seconds and then
+starts the installed channel again with a fresh IOS. Network events
+(boot, each attempt and its time, listener errors, restarts, cleanups)
+go to `sd:/hbc-network.log`, kept to 1 MiB with the previous one in
+`sd:/hbc-network.old.log`, so a Wii that stayed offline can be diagnosed
+from its SD card. No network name or key is written.
 
 Point a Wii Remote at the screen and HBC's hand cursor follows it, turning as you twist the remote: the
 button under it lights up and A presses it, and pointing at a bar button
@@ -642,6 +654,10 @@ value; the 16-bit TMD field packs it as `major << 11 | minor << 5 | patch`.
 | `hbc_agent_stop()` (then an IOS reload, a re-init, a crash) and `hbc_agent_listen()` (the app's own server on 4299) on a real Wii | `make -C tests/agent_app`, then `python3 tests/wii_agent_stop.py --wii WII-IP` (`--dol` for another build) | Wii in any HBC |
 | File times and flags from HBC and an app's agent (libogc 3, libogc2), and a re-sync that reads nothing | `python3 tests/wii_file_meta.py WII-IP` | Wii in any HBC |
 | HOME > HBC > Restart network (keys checked against `overlay_ui` before each A) | `python3 tests/wii_net_restart.py WII-IP` | Wii in any HBC |
+| Network start budget and cancellation, cleanup supervision, the SD network log (queue, throttle, rotation) on the PC | `python3 tests/test_netinit.py`, `test_netrecovery.py`, `test_netdiag.py` | C compiler |
+| SD network log, Restart network and HOME > HBC > Reload HBC in an isolated NAND | `python3 tests/dolphin_hbc_reload.py [IMAGE]` | Dolphin |
+| A failed start cleaned up and retried with no input and no reload | build with `EXTRA_CFLAGS=-DHBC_TEST_INIT_FAILURE`, then `python3 tests/dolphin_network_retry.py IMAGE` | Dolphin; never on a Wii |
+| A network cleanup that hangs: countdown, fresh IOS, the installed channel again, no loop | build the WAD with `EXTRA_CFLAGS=-DHBC_TEST_STUCK_NET_CLEANUP`, then `python3 tests/dolphin_network_recovery.py WAD` | Dolphin; never on a Wii |
 | File errors from HBC and an app's agent: a missing folder, a missing local file, a 400 MB upload to a card without room (`ENOSPC` at once) | `python3 tests/wii_file_errors.py WII-IP` (SD with under 400 MB free), or `--dolphin` | Wii in any HBC, or Dolphin |
 | The agent's safety tools on a real Wii (assert, abort, deadlock, failed malloc, frame pacing, stub guard, Reset, stack overflow) | `make -C tests/agent_app`, then `python3 tests/wii_agent_safety.py --wii WII-IP` | Wii in any HBC |
 | DEV > Info and `hbc.py hw` on a real Wii | `python3 tests/wii_info.py WII-IP` | Wii in any HBC |

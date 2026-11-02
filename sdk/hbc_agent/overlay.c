@@ -222,6 +222,11 @@ static struct {
 // the focus is before they press A, instead of guessing.
 static ov_ui *open_ui;
 
+void hbc_agent_home_close(void) {
+	if (open_ui)
+		open_ui->closing = true;
+}
+
 int agent_overlay_state(char *buf, int size) {
 	ov_ui *ui = open_ui;
 

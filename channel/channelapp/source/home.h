@@ -9,6 +9,8 @@ typedef enum {
 	HOME_ABOUT,
 	HOME_BOOTMII,
 	HOME_NETWORK,
+	HOME_NETWORK_RECOVERY, // a network cleanup hung: reload the channel
+	HOME_RELOAD,
 	HOME_SYSTEM_MENU,
 	HOME_RESTART,
 	HOME_SHUTDOWN,
@@ -21,5 +23,7 @@ void home_init(void);
 bool home_requested(u32 buttons_down, u32 buttons_held);
 // Shows the HOME overlay until the user closes it.
 home_action home_show(void);
+// Whether the installed channel can be reloaded (HOME > HBC > Reload HBC).
+bool home_can_reload(void);
 
 #endif

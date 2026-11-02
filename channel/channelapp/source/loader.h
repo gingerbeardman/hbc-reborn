@@ -35,7 +35,10 @@ typedef struct {
 } loader_result;
 
 void loader_init (void);
-void loader_deinit (void);
+// False when the TCP worker did not stop: a channel reload must reset IOS.
+bool loader_deinit (void);
+// Suspends a worker that did not stop, before IOS and HBC are replaced.
+void loader_tcp_park (void);
 
 void loader_tcp_init (void);
 // Shuts the network down and starts it again, on the next frame.
@@ -46,6 +49,8 @@ bool loader_tcp_initializing (void);
 bool loader_tcp_initialized (void);
 // Times the network came up since HBC started.
 u32 loader_net_starts (void);
+// The address the network came up with (0: down), read without asking IOS.
+u32 loader_net_ip (void);
 u32 loader_tcp_stack_used (void);
 bool loader_handshaked (void);
 
