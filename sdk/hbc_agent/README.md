@@ -367,7 +367,7 @@ fresh IOS, and it notices a network that drops while it sits idle
 time limit, and Restart network or launching an app cancels one that IOS never
 finishes. Shutting the network down can itself hang inside IOS (libogc's
 `net_deinit` waits for a reply that never comes); if it has not returned after
-5 seconds, the installed channel says so for 10 seconds and then starts again
+5 seconds, the installed channel says so for 3 seconds and then starts again
 with a fresh IOS, at most 3 times in a row. HBC closes the overlay for the
 countdown with `hbc_agent_home_close()`.
 

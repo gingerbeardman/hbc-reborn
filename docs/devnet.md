@@ -490,7 +490,8 @@ a private busy flag only an IOS reply clears).
 - `netinit.c`: the fresh-IOS relaunch. While fewer than 3 relaunches in a
   row have happened, the installed channel running as itself gives a start
   20 s and goes to the relaunch at libogc's own timeout instead of retrying in
-  the same IOS; a hung cleanup goes to the same relaunch. The count rides in
+  the same IOS; a hung cleanup goes to the same relaunch. Every automatic
+  relaunch shows a 3 s countdown first (`HBC_NET_RELAUNCH_COUNTDOWN_S`). The count rides in
   MEM2 at `0x91801140`, past the records above: magic `HBCR`, relaunches,
   `magic ^ ~relaunches`, and the gateway that answered before a gateway
   relaunch (else 0). HBC writes it only as it relaunches itself, reads and

@@ -70,7 +70,7 @@ HBC joins the network by itself when it starts, and keeps it up:
   with a fresh IOS, at most 3 times in a row. A gateway that never answered
   is never acted on.
 - **A network cleanup that hangs inside IOS** leaves the network off until
-  HBC starts again, so the installed channel says so for 10 s and restarts
+  HBC starts again, so the installed channel says so for 3 s and restarts
   itself with a fresh IOS, at most 3 times in a row. After that HBC carries
   on without the network.
 

@@ -518,7 +518,7 @@ void main_real(void) {
 			if (relaunch) {
 				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
 					"The network stopped responding.\nHBC will restart automatically.",
-					0, NET_POPUP_TIMEOUT_S);
+					0, HBC_NET_RELAUNCH_COUNTDOWN_S);
 				hlog("Network: restarting HBC with a fresh IOS\n");
 				reload_hbc = reset_network_ios = network_relaunch = true;
 				should_exit = true;
@@ -545,7 +545,7 @@ void main_real(void) {
 				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
 					gateway ? "The network stopped responding.\nHBC will restart automatically." :
 					"The network failed to connect.\nHBC will restart automatically.",
-					0, HBC_NET_FAST_POPUP_S);
+					0, HBC_NET_RELAUNCH_COUNTDOWN_S);
 				// The worker's own retry may have connected meanwhile.
 				if (!gateway && loader_tcp_initialized()) {
 					netdiag_event("Failed start: network up during the countdown, no relaunch");

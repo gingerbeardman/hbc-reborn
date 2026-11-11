@@ -1890,7 +1890,7 @@ What HBC does when the network won't come back in place: a network cleanup
 that never returns inside IOS (libogc cannot start the network again until
 HBC itself starts again), a start that fails, or a gateway still silent
 after HBC restarted the network by itself. "auto" (the default) has the
-installed channel restart itself with a fresh IOS after a short countdown,
+installed channel restart itself with a fresh IOS after a 3 s countdown,
 at most 3 times in a row; after that, and in a DOL started by a loader, HBC
 carries on without the network until it next starts, retrying failed
 starts. "wait" never restarts HBC by itself. "reload" restarts it after

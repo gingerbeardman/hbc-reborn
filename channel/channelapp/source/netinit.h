@@ -13,7 +13,7 @@
 // So while fewer than HBC_NET_FAST_RELAUNCHES relaunches in a row have
 // happened, the installed channel gives a start HBC_NET_INIT_FAST_MS, goes
 // to the relaunch at libogc's timeout rather than retrying in the same IOS,
-// and counts down HBC_NET_FAST_POPUP_S. After them, in a DOL started by a
+// and counts down HBC_NET_RELAUNCH_COUNTDOWN_S. After them, in a DOL started by a
 // loader (which cannot relaunch the channel), and with `hbc.py net-hang
 // wait`, a start gets HBC_NET_INIT_TIMEOUT_MS and the loader's backoff
 // retries (2 s, 4 s, up to 32 s apart).
@@ -30,7 +30,9 @@
 #define HBC_NET_INIT_TIMEOUT_MS 30000u
 #define HBC_NET_INIT_FAST_MS 20000u
 #define HBC_NET_FAST_RELAUNCHES 3
-#define HBC_NET_FAST_POPUP_S 3
+// Every automatic relaunch's countdown, whatever led to it (a failed start,
+// a hung cleanup, a silent gateway): the message HBC shows before it goes.
+#define HBC_NET_RELAUNCH_COUNTDOWN_S 3
 
 // Relaunches in a row, carried across the relaunch in MEM2 just past HBC's
 // records (0x91800000-0x91801140: the log target's copy, the crash block,

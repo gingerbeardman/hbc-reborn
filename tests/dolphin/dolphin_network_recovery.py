@@ -5,9 +5,10 @@ Requires a WAD built with HBC_TEST_STUCK_NET_CLEANUP, where Restart network
 wedges the TCP thread inside its cleanup while it holds its mutex. Never put
 that build on a Wii. HOME > HBC > Restart network must take HBC off the
 network. By default (net-hang auto), and with --reload (`hbc.py net-hang
-reload` set first), after the 5 s watchdog and the countdown the log must show
-one IOS reload and one more launch of the installed channel, which answers
-again and stays up: one relaunch, no loop. In auto the relaunched HBC reports
+reload` set first), after the 5 s watchdog and the 3 s countdown (so within
+15 s of the press) the log must show one IOS reload and one more launch of
+the installed channel, which answers again and stays up: one relaunch, no
+loop. In auto the relaunched HBC reports
 net_relaunches 1. With --wait (`hbc.py net-hang wait`) HBC keeps running
 without the network: Dolphin's log shows no IOS reload and no second launch of
 the channel for 40 s.
@@ -88,8 +89,9 @@ def main():
         else:
             raise AssertionError(f"net-hang {mode} did not relaunch the channel")
         relaunched = time.monotonic() - pressed
-        # Only after the 5 s watchdog.
+        # Only after the 5 s watchdog, and the countdown is 3 s, not 10.
         assert relaunched >= 4.5, relaunched
+        assert relaunched < 15, relaunched
         assert count(run, IOS_START) == ios_starts + 1, "no fresh IOS before the relaunch"
         smoke.wait_version(run, 60)
         time.sleep(10)
