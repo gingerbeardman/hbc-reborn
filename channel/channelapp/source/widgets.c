@@ -12,122 +12,42 @@
 
 static const char *app_entry_default_description;
 
-// Options > App badges: a solid pill in a tile's top-right corner, "New" or
-// "Updated", and for Updated an amber light inside the tile's top edge in the
-// same colour. The shapes are white textures, tinted with the theme's badge colours
-// (theme.badge_new, theme.badge_updated) when drawn.
-#define BADGE_H 16
-#define BADGE_MAX_W 96
-#define BADGE_INSET 8
-#define GLOW_Z 0                         // over the button, under the name
-#define BADGE_GLOW_TAU (13.0f / 3.0f)   // how far the light reaches down, in rows
+// Options > App badges: a dot tucked into a tile's top-right corner, red on
+// an app never run from HBC and gold on one whose boot file, icon or meta.xml
+// changed since its last run (apprun.c). The dot is a white antialiased disc,
+// tinted with the theme's badge colour (theme.badge_new, theme.badge_updated)
+// when drawn, over a faint drop shadow.
+#define BADGE_D 16
+#define BADGE_SHADOW 0x00000040
 
-enum { BADGE_NEW, BADGE_UPDATED, BADGE_COUNT };
+static gfx_entity badge_dot;
+static u8 badge_dot_pixels[BADGE_D * BADGE_D * 4] ATTRIBUTE_ALIGN(32);
 
-typedef struct {
-	const char *label;
-	int text_w;           // what the label measures, in view units
-	gfx_entity pill;
-	u8 pixels[BADGE_MAX_W * BADGE_H * 4] ATTRIBUTE_ALIGN(32);
-} badge_pill;
+// GX RGBA8 is 4x4 tiles, each with an AR plane and a GB plane.
+static void badge_gen_dot(void) {
+	int x, y;
 
-static badge_pill badge_pills[BADGE_COUNT];
-typedef struct {
-	gfx_entity entity;
-	u8 *pixels;           // malloc'd with the button's size, I8; NULL if none
-} badge_glow;
+	for (y = 0; y < BADGE_D; ++y)
+		for (x = 0; x < BADGE_D; ++x) {
+			float dx = x - 7.5f, dy = y - 7.5f;
+			float radius = sqrtf(dx * dx + dy * dy);
+			int p = ((y / 4) * (BADGE_D / 4) + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2;
 
-static badge_glow badge_glow_grid, badge_glow_list;
-
-// A white RGBA8 pixel with coverage a. GX RGBA8 is 4x4 tiles, each with an
-// AR plane and a GB plane.
-static void badge_pixel(u8 *pixels, int w, int x, int y, u8 a) {
-	int p = ((y / 4) * (w / 4) + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2;
-
-	pixels[p] = a;
-	pixels[p + 1] = 255;
-	pixels[p + 32] = 255;
-	pixels[p + 33] = 255;
-}
-
-static void badge_gen_pill(badge_pill *bp, const char *label) {
-	int x, y, w, r = BADGE_H / 2;
-	float ratio = widescreen ? WIDESCREEN_RATIO : 1.0f;
-
-	bp->label = label;
-	bp->text_w = (int) (font_get_string_width(FONT_BADGE, label, strlen(label)) * ratio + 0.5f);
-	w = (bp->text_w + BADGE_H + 3) & ~3;   // rounded ends and a little air
-	if (w > BADGE_MAX_W)
-		w = BADGE_MAX_W;
-	memset(bp->pixels, 0, sizeof(bp->pixels));
-	for (y = 0; y < BADGE_H; ++y)
-		for (x = 0; x < w; ++x) {
-			// Distance from this pixel's centre to the segment between the
-			// two end circles' centres.
-			float px = x + 0.5f, py = y + 0.5f;
-			float cx = px < r ? r : px > w - r ? w - r : px;
-			float dx = px - cx, dy = py - r;
-			float cover = r + 0.5f - sqrtf(dx * dx + dy * dy);
-
-			badge_pixel(bp->pixels, w, x, y,
-					cover >= 1.0f ? 255 : cover <= 0.0f ? 0 : (u8) (cover * 255));
+			badge_dot_pixels[p] = radius <= 6.5f ? 255 :
+					radius < 7.5f ? (u8) ((7.5f - radius) * 255) : 0;
+			badge_dot_pixels[p + 1] = 255;
+			badge_dot_pixels[p + 32] = 255;
+			badge_dot_pixels[p + 33] = 255;
 		}
-	gfx_gen_tex(&bp->pill, w, BADGE_H, bp->pixels, GFXT_RGBA8);
-}
-
-// The Updated light: from the button's own top outline it fades out downward,
-// hugging the rounded corners. Built from the button picture's alpha: per
-// column, the first row over half alpha is the edge, and the light there is
-// e^(-(y - edge) / BADGE_GLOW_TAU) times the picture's alpha, clipped to the
-// button. An I8 picture the size of the button, tinted with the badge colour.
-static void badge_gen_glow(badge_glow *g, const gfx_entity *button) {
-	int x, y, w = button->w, h = button->h;
-	int wp = (w + 7) & ~7, hp = (h + 3) & ~3;
-	const u8 *src = button->texture.pixels;
-	u8 *pixels;
-
-	if (w < 1 || h < 1 || !src)
-		return;
-	pixels = memalign(32, wp * hp);
-	if (!pixels)
-		return;
-	memset(pixels, 0, wp * hp);
-	for (x = 0; x < w; ++x) {
-		int first = -1;
-
-		for (y = 0; y < h; ++y) {
-			// RGBA8 tiles: the AR plane comes first, A is the even byte.
-			u8 a = src[((y / 4) * (button->w / 4) + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2];
-
-			if (first < 0) {
-				if (a <= 127)
-					continue;
-				first = y;
-			}
-			if (y - first > 40)
-				break;
-			pixels[((y / 4) * (wp / 8) + x / 8) * 32 + (y % 4) * 8 + x % 8] =
-					(u8) (expf(-(y - first) / BADGE_GLOW_TAU) * a * 0.95f + 0.5f);
-		}
-	}
-	gfx_gen_tex(&g->entity, wp, hp, pixels, GFXT_I8);
-	free(g->pixels);
-	g->pixels = pixels;
-}
-
-static void badge_theme_reinit(void) {
-	badge_gen_pill(&badge_pills[BADGE_NEW], _("New"));
-	badge_gen_pill(&badge_pills[BADGE_UPDATED], _("Updated"));
-	badge_gen_glow(&badge_glow_grid, theme_gfx[THEME_GRID_APP_ENTRY]);
-	badge_gen_glow(&badge_glow_list, theme_gfx[THEME_APP_ENTRY]);
+	gfx_gen_tex(&badge_dot, BADGE_D, BADGE_D, badge_dot_pixels, GFXT_RGBA8);
 }
 
 void widgets_theme_reinit (void) {
 	app_entry_default_description = _("<no description>");
-	badge_theme_reinit();
 }
 
 void widgets_init (void) {
+	badge_gen_dot();
 	widgets_theme_reinit();
 }
 
@@ -451,43 +371,22 @@ void widget_button_set_caption(widget *w, font_id font, const char *caption) {
 }
 
 // An app's badge goes in the widget's last layer, empty when unbadged.
-static void widget_new_badge(widget *w, const app_entry *entry, badge_glow *glow_src) {
+static void widget_new_badge(widget *w, const app_entry *entry) {
 	widget_layer *l = &w->layers[w->layer_count - 1];
-	const badge_pill *bp;
-	const theme_badge_t *colors;
-	bool updated = entry->run_state == APP_RUN_UPDATED;
-	const badge_glow *glow = updated && glow_src->pixels ? glow_src : NULL;
-	int count, glyphs, n = 0, x;
-	u16 pill_x, text_w;
+	int x = w->width - BADGE_D;
 
 	memset(l, 0, sizeof(*l));
 	if (!settings.new_badges || entry->run_state == APP_RUN_UNCHANGED || entry->type == AET_THEME)
 		return;
-	bp = &badge_pills[updated ? BADGE_UPDATED : BADGE_NEW];
-	colors = updated ? &theme.badge_updated : &theme.badge_new;
-	// A tiny theme tile would wrap the u16.
-	x = w->width - BADGE_INSET - bp->pill.w;
-	pill_x = x < 0 ? 0 : x;
-	text_w = bp->pill.w - 6;
-	glyphs = font_get_char_count(FONT_BADGE, bp->label, text_w);
-	count = 1 + glyphs + (glow ? 1 : 0);
-	l->gfx_entry_count = count;
-	l->gfx_entries = pmalloc(count * sizeof(gfx_queue_entry));
-	gfx_qe_entity(&l->gfx_entries[n++], (gfx_entity *) &bp->pill, pill_x, BADGE_INSET, 2,
-			colors->fill);
-	if (glyphs) {
-		int i;
-
-		font_plot_string(&l->gfx_entries[n], glyphs, FONT_BADGE, bp->label, pill_x + 3,
-				BADGE_INSET + BADGE_H / 2, 3, text_w, FA_CENTERED, FA_EM_CENTERED);
-		// The glyphs take the pill's text colour, not the theme's font colour.
-		for (i = 0; i < glyphs; ++i)
-			if (l->gfx_entries[n + i].type == GFXQ_ENTITY)
-				l->gfx_entries[n + i].entity.color = colors->text;
-		n += glyphs;
-	}
-	if (glow)
-		gfx_qe_entity(&l->gfx_entries[n++], (gfx_entity *) &glow->entity, 0, 0, GLOW_Z, colors->fill);
+	if (x < 0)   // a tiny theme tile would wrap the u16
+		x = 0;
+	l->gfx_entry_count = 2;
+	l->gfx_entries = pmalloc(2 * sizeof(gfx_queue_entry));
+	// A faint one-pixel drop shadow shares the dot's antialiased edge.
+	gfx_qe_entity(&l->gfx_entries[0], &badge_dot, x, 1, 1, BADGE_SHADOW);
+	// Tuck into the rounded corner, just overlapping the artwork's inset.
+	gfx_qe_entity(&l->gfx_entries[1], &badge_dot, x, 0, 2,
+			entry->run_state == APP_RUN_UPDATED ? theme.badge_updated.fill : theme.badge_new.fill);
 }
 
 void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
@@ -548,7 +447,7 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 		gfx_qe_entity (&l->gfx_entries[0], entry->icon, GRID_APP_ENTRY_ICON_X,
 						APP_ENTRY_ICON_Y, 1, COL_DEFAULT);
 	}
-	widget_new_badge(w, entry, &badge_glow_grid);
+	widget_new_badge(w, entry);
 }
 
 // A Mii in the Mii picker (miipick.c): its coin, and the glow ring around
@@ -658,7 +557,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 	if (entry->icon)
 		gfx_qe_entity (&l->gfx_entries[l1 + l2], entry->icon,
 						APP_ENTRY_ICON_X, APP_ENTRY_ICON_Y, 1, COL_DEFAULT);
-	widget_new_badge(w, entry, &badge_glow_list);
+	widget_new_badge(w, entry);
 }
 
 void widget_progress (widget *w, s16 x, s16 y, s16 z, const char *caption,

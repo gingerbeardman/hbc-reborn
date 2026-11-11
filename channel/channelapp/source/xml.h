@@ -68,9 +68,9 @@ typedef enum {
 	TLANG_ZH = 0x04,
 } theme_lang_t;
 
-// An app badge pill (widgets.c): its fill and its text, 0xRRGGBBAA.
+// An app badge dot (widgets.c): its colour, 0xRRGGBBAA.
 typedef struct {
-	u32 fill, text;
+	u32 fill;
 } theme_badge_t;
 
 typedef struct {

@@ -7,11 +7,11 @@
                 comes back each time) and sd:/hbc/apps_seen.txt then has a
                 line for each; the third stays New
   update        one launched app's meta.xml changes: Updated
-  list, grid    a blue New pill and an amber Updated pill in each
-  launch        the changed app again: its Updated pill is gone, New stays,
+  list, grid    a red New dot and a gold Updated dot in each
+  launch        the changed app again: its Updated dot is gone, New stays,
                 and apps_seen.txt has its new stamp
   sort_id       its meta.xml gets only a <sort_id> (hbc.py order): still no
-                Updated pill
+                Updated dot
 
 HBCS says where the focus is before every A. Pictures go to OUTDIR (default:
 a temporary folder). Needs the retail WAD (make -C channel) and
@@ -47,8 +47,8 @@ TAB = chr(9)
 
 
 def color_counts(data):
-    """Blue (New) and amber (Updated) pill pixels in a YUYV screen."""
-    blue = amber = 0
+    """Red (New) and gold (Updated) dot pixels in a YUYV screen."""
+    red = gold = 0
     for i in range(0, len(data), 4):
         y0, cb, y1, cr = data[i:i + 4]
         d, e = cb - 128, cr - 128
@@ -57,9 +57,9 @@ def color_counts(data):
             r = (c + 409 * e + 128) >> 8
             g = (c - 100 * d - 208 * e + 128) >> 8
             b = (c + 516 * d + 128) >> 8
-            blue += r < 120 and 130 < g < 200 and b > 190
-            amber += r > 200 and 150 < g < 200 and b < 110
-    return blue, amber
+            red += r > 200 and g < 110 and b < 110
+            gold += r > 200 and 170 < g < 240 and b < 90
+    return red, gold
 
 
 def main():
@@ -125,8 +125,8 @@ def main():
         seen = "sd:/hbc/apps_seen.txt"
         pad.send("stick 0 -1; wait 2")
         pad.done()
-        blue, amber = picture("badges-all-new")
-        check(blue >= 8 and amber == 0, f"all three New ({blue} blue, {amber} amber)")
+        red, gold = picture("badges-all-new")
+        check(red >= 8 and gold == 0, f"all three New ({red} red, {gold} gold)")
 
         for row, folder in ((1, APPS[0]), (3, APPS[2])):
             check(launch(wii, pad, out, folder, row, False), f"{folder} ran and HBC came back")
@@ -135,8 +135,8 @@ def main():
         lines = [l for l in hbc.get_file(wii, seen).decode().splitlines() if not l.startswith("#")]
         check(sorted(l.split(TAB)[0] for l in lines) == [APPS[0], APPS[2]],
               f"apps_seen.txt has the two launched apps ({lines})")
-        blue, amber = picture("badges-after-two-launches")
-        check(blue >= 8 and amber == 0, f"New stays on the third only ({blue} blue, {amber} amber)")
+        red, gold = picture("badges-after-two-launches")
+        check(red >= 8 and gold == 0, f"New stays on the third only ({red} red, {gold} gold)")
         try:
             hbc.get_file(wii, "sd:/apps/1 Already run/.hbc-ran")
             check(False, "no marker file in the app folder")
@@ -147,17 +147,17 @@ def main():
         hbc.put_file(wii, "sd:/apps/3 Updated app/meta.xml", meta_xml("3 Updated app", "After update", "updated"))
         time.sleep(3)
         for layout in ("list", "grid"):
-            blue, amber = picture(f"badges-{layout}")
-            check(blue >= 8 and amber >= 8,
-                  f"{layout}: a New and an Updated pill ({blue} blue, {amber} amber)")
-            # The light is part of the picture without the focus too.
+            red, gold = picture(f"badges-{layout}")
+            check(red >= 8 and gold >= 8,
+                  f"{layout}: a New and an Updated dot ({red} red, {gold} gold)")
+            # The dots show without the focus too.
             way = "0 1" if layout == "list" else "-1 0"
             back = "0 -1" if layout == "list" else "1 0"
             pad.send(f"stick {way}; wait 2")
             pad.done()
-            blue, amber = picture(f"badges-{layout}-unfocused")
-            check(blue >= 8 and amber >= 8,
-                  f"{layout}, focus elsewhere: a New and an Updated pill ({blue} blue, {amber} amber)")
+            red, gold = picture(f"badges-{layout}-unfocused")
+            check(red >= 8 and gold >= 8,
+                  f"{layout}, focus elsewhere: a New and an Updated dot ({red} red, {gold} gold)")
             pad.send(f"stick {back}; wait 2")
             pad.done()
             pad.send("press Triangle; wait 2")   # 2: the other layout
@@ -169,8 +169,8 @@ def main():
         check(hbc.get_file(wii, seen) != before, "apps_seen.txt took the new file stamps")
         pad.send("stick 0 -1; wait 2")
         pad.done()
-        blue, amber = picture("badges-after-launch")
-        check(blue >= 8 and amber == 0, f"after the launch: New stays, Updated gone ({blue} blue, {amber} amber)")
+        red, gold = picture("badges-after-launch")
+        check(red >= 8 and gold == 0, f"after the launch: New stays, Updated gone ({red} red, {gold} gold)")
 
         # hbc.py order rewrites meta.xml with a <sort_id>: not an update.
         meta = meta_xml("3 Updated app", "After update", "updated")
@@ -179,8 +179,8 @@ def main():
         time.sleep(3)
         pad.send("stick 0 -1; wait 2")
         pad.done()
-        blue, amber = picture("badges-after-sort-id")
-        check(blue >= 8 and amber == 0, f"a new <sort_id> alone: no Updated pill ({blue} blue, {amber} amber)")
+        red, gold = picture("badges-after-sort-id")
+        check(red >= 8 and gold == 0, f"a new <sort_id> alone: no Updated dot ({red} red, {gold} gold)")
     finally:
         pad.close()
         faults = dolphin.faults()

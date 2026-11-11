@@ -13,10 +13,9 @@ users. The choice is saved with the channel's settings.
 ## App badges
 
 Options (1) > **App badges: On** marks apps in the list and the grid with a
-pill in the tile's top-right corner: a blue **New** on an app you have never
-run from HBC, and an amber **Updated** (with a bar along the tile's top edge)
-on one whose `boot.dol`, `boot.elf`, `meta.xml` or `icon.png` changed, in
-size or date, since you last ran it.
+dot in the tile's top-right corner: red on an app you have never run from
+HBC, and gold on one whose `boot.dol`, `boot.elf`, `meta.xml` or `icon.png`
+changed, in size or date, since you last ran it.
 
 A launch from HBC's own app list or app page records a run and clears the
 badge, and so does `hbc.py send` or `run` of an installed app's own
@@ -44,11 +43,10 @@ If the device is read-only or fails, the badges simply do not persist. With
 badges off (the default) HBC neither reads nor writes the file, so turning
 them on for the first time shows every app as new.
 
-A theme can colour the pills with `badge_new` and `badge_updated` in its
-`theme.xml`, each with a `<fill>` and a `<text>` colour (red, green, blue and
-alpha, 0 to 255, like `font_color`). The defaults are a blue fill `#4fa3e0`
-with text `#062a44` for New, and an amber fill `#e8b04a` with text `#3a2604`
-for Updated. The text is 12 px; a font entry targeting `badge` changes it.
+A theme can colour the dots with `badge_new` and `badge_updated` in its
+`theme.xml`, each with a `<fill>` colour (red, green, blue and alpha, 0 to
+255, like `font_color`). The defaults are red `#ff3b30` for new and gold
+`#ffcc00` for updated.
 
 ## Your own app order
 

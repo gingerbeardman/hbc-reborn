@@ -131,7 +131,6 @@ static void _get_badge(mxml_node_t *node, const char *element, theme_badge_t *ba
 	if (!node)
 		return;
 	_get_color(node, "fill", &badge->fill);
-	_get_color(node, "text", &badge->text);
 }
 
 static const char *targets[FONT_MAX] = {
@@ -142,8 +141,7 @@ static const char *targets[FONT_MAX] = {
 	"appdesc",
 	"button",
 	"button_desel",
-	"hint",
-	"badge"
+	"hint"
 };
 
 static void _get_font(mxml_node_t *node) {
