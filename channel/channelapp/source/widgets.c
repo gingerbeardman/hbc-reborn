@@ -42,8 +42,90 @@ static void badge_gen_dot(void) {
 	gfx_gen_tex(&badge_dot, BADGE_D, BADGE_D, badge_dot_pixels, GFXT_RGBA8);
 }
 
+// The focused app's border: the outline of the theme's focus picture (its
+// outermost solid pixels, not the soft shadow beyond them), as an I8 texture
+// built at theme load and drawn over the picture in the highlight's own
+// colour: the average of the picture's solid pixels, unless the theme sets
+// <focus_border_color>. Built from the picture's alpha, so it follows any
+// theme's shape, rounded corners included.
+typedef struct {
+	gfx_entity entity;
+	u8 *pixels;           // I8, NULL if the theme's picture can't give one
+	int size;
+	u32 color;            // the highlight's average colour, 0xRRGGBBff
+} focus_ring;
+
+static focus_ring ring_list, ring_grid;
+
+// Texel (x, y) of an RGBA8 GX texture: 4x4 tiles, an AR plane then a GB plane.
+static const u8 *tex_texel(const gfx_entity *e, int x, int y) {
+	return e->texture.pixels + ((y / 4) * (e->w / 4) + x / 4) * 64 + ((y % 4) * 4 + x % 4) * 2;
+}
+
+static bool tex_solid(const gfx_entity *e, int x, int y) {
+	return x >= 0 && y >= 0 && x < e->w && y < e->h && tex_texel(e, x, y)[0] > 127;
+}
+
+static void ring_make(focus_ring *r, const gfx_entity *btn) {
+	int w, h, wp, hp, x, y, size;
+	u32 sum[3] = { 0, 0, 0 }, n = 0;
+
+	if (!btn || btn->type != GFXE_TEXTURE || !btn->texture.pixels ||
+			btn->texture.type != GFXT_RGBA8 || btn->w < 1 || btn->h < 1)
+		return;
+	w = btn->w;
+	h = btn->h;
+	wp = (w + 7) & ~7;   // I8 tiles are 8 wide and 4 high
+	hp = (h + 3) & ~3;
+	size = wp * hp;
+	if (r->pixels && r->size != size) {
+		free(r->pixels);
+		r->pixels = NULL;
+	}
+	if (!r->pixels)
+		r->pixels = (u8 *) pmemalign(32, size);
+	r->size = size;
+	memset(r->pixels, 0, size);
+
+	for (y = 0; y < h; ++y)
+		for (x = 0; x < w; ++x) {
+			const u8 *t = tex_texel(btn, x, y);
+
+			if (!tex_solid(btn, x, y))
+				continue;
+			if (tex_solid(btn, x - 1, y) && tex_solid(btn, x + 1, y) &&
+					tex_solid(btn, x, y - 1) && tex_solid(btn, x, y + 1)) {
+				sum[0] += t[1];    // R
+				sum[1] += t[32];   // G
+				sum[2] += t[33];   // B
+				++n;
+				continue;
+			}
+			r->pixels[((y / 4) * (wp / 8) + x / 8) * 32 + (y % 4) * 8 + x % 8] = t[0];
+		}
+	r->color = n ? (sum[0] / n) << 24 | (sum[1] / n) << 16 | (sum[2] / n) << 8 | 0xff :
+			0xffffffff;
+	gfx_gen_tex(&r->entity, wp, hp, r->pixels, GFXT_I8);   // flushes it
+}
+
+// The focus layer: the theme's focus picture, and its border in the ring
+// colour over it.
+static void focus_layer(widget_layer *l, gfx_entity *pic, const focus_ring *r) {
+	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
+	l->flags_invert = 0;
+	l->gfx_entry_count = r->pixels ? 2 : 1;
+	l->gfx_entries = (gfx_queue_entry *)
+						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
+	gfx_qe_entity (&l->gfx_entries[0], pic, 0, 0, 0, COL_DEFAULT);
+	if (r->pixels)
+		gfx_qe_entity (&l->gfx_entries[1], (gfx_entity *) &r->entity, 0, 0, 1,
+						theme.focus_border != NO_COLOR ? theme.focus_border : r->color);
+}
+
 void widgets_theme_reinit (void) {
 	app_entry_default_description = _("<no description>");
+	ring_make(&ring_list, theme_gfx[THEME_APP_ENTRY_FOCUS]);
+	ring_make(&ring_grid, theme_gfx[THEME_GRID_APP_ENTRY_FOCUS]);
 }
 
 void widgets_init (void) {
@@ -425,14 +507,7 @@ void widget_grid_app_entry(widget *w, s16 x, s16 y, s16 z,
 	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_GRID_APP_ENTRY],
 					0, 0, 0, WIDGET_DISABLED_COLOR);
 
-	l = &w->layers[2];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
-	l->flags_invert = 0;
-	l->gfx_entry_count = 1;
-	l->gfx_entries = (gfx_queue_entry *)
-						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
-	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_GRID_APP_ENTRY_FOCUS],
-					0, 0, 0, COL_DEFAULT);
+	focus_layer(&w->layers[2], theme_gfx[THEME_GRID_APP_ENTRY_FOCUS], &ring_grid);
 
 	if (entry->icon) {
 		l = &w->layers[3];
@@ -505,14 +580,7 @@ void widget_app_entry (widget *w, s16 x, s16 y, s16 z, const app_entry *entry) {
 	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_APP_ENTRY],
 					0, 0, 0, WIDGET_DISABLED_COLOR);
 
-	l = &w->layers[2];
-	l->flags = WF_FOCUSED | WF_FLAGS_AND | WF_ENABLED;
-	l->flags_invert = 0;
-	l->gfx_entry_count = 1;
-	l->gfx_entries = (gfx_queue_entry *)
-						pmalloc (l->gfx_entry_count * sizeof (gfx_queue_entry));
-	gfx_qe_entity (&l->gfx_entries[0], theme_gfx[THEME_APP_ENTRY_FOCUS],
-					0, 0, 0, COL_DEFAULT);
+	focus_layer(&w->layers[2], theme_gfx[THEME_APP_ENTRY_FOCUS], &ring_list);
 
 	line1 = NULL;
 	line2 = NULL;

@@ -76,6 +76,9 @@ typedef struct {
 typedef struct {
 	theme_gradient_t progress;
 	theme_badge_t badge_new, badge_updated;
+	// The focused app's border (widgets.c), 0xRRGGBBAA; theme.xml's
+	// <focus_border_color>, else NO_COLOR for the focus picture's own colour.
+	u32 focus_border;
 	char *description;
 	theme_font_t default_font;
 	theme_font_t fonts[FONT_MAX];

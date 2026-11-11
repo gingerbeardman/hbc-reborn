@@ -368,6 +368,7 @@ void theme_init(u8 *data, u32 data_len) {
 	// (widgets.c).
 	theme.badge_new.fill = 0xff3b30ff;
 	theme.badge_updated.fill = 0xffcc00ff;
+	theme.focus_border = NO_COLOR;
 
 	titlepath = title_get_path();
 	if (titlepath[0])

@@ -659,6 +659,7 @@ bool load_theme_xml(char *buf) {
 	_get_gradient(node, "progress_gradient", &theme.progress);
 	_get_badge(node, "badge_new", &theme.badge_new);
 	_get_badge(node, "badge_updated", &theme.badge_updated);
+	_get_color(node, "focus_border_color", &theme.focus_border);
 
 	fnode = mxmlFindElement(node, root, "font", NULL, NULL, MXML_DESCEND_FIRST);
 	while (fnode != NULL) {
