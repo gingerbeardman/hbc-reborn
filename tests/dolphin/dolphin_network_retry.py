@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """A failed network start is cleaned up, then retried without a reload.
 
-Requires an HBC_TEST_INIT_FAILURE build (DOL or WAD), which fails the first
-start that would have succeeded. Never run that build on a Wii. With no
+Requires an HBC_TEST_INIT_FAILURE DOL, which fails the first start that would
+have succeeded. Never run that build on a Wii. (As a WAD, net-hang auto would
+relaunch the installed channel for the failed start instead.) With no
 button pressed, HBC must clean up the failed start and come back on the
 network through the TCP thread's own retry, without the stuck-cleanup
 countdown or a relaunch: Dolphin's log shows no IOS start after HBC's own,

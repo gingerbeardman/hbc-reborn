@@ -9,6 +9,8 @@
 
 #define NO_COLOR 0x0DEADF00
 
+enum { NET_HANG_AUTO = 0, NET_HANG_RELOAD, NET_HANG_WAIT };
+
 typedef struct {
 	char *name;
 	char *coder;
@@ -44,9 +46,12 @@ typedef struct {
 	int new_badges;
 	// HOME > Controller settings > Sideways remote, kept here (home.c).
 	int sideways_remotes;
-	// A hung network cleanup reloads the channel (netrecovery.h) instead of
-	// leaving the network off: developers only, `hbc.py net-hang`, no menu.
-	int net_hang_reload;
+	// When the network will not come back in place (netinit.h): NET_HANG_AUTO
+	// relaunches the installed channel with a fresh IOS, at most 3 times in a
+	// row; NET_HANG_RELOAD every time a cleanup hangs; NET_HANG_WAIT never,
+	// leaving the network off until HBC starts again. `hbc.py net-hang`, no
+	// menu.
+	int net_hang;
 	char app_sel[64];
 	// The avatar's Mii, chosen in the Mii picker: its creation ID in hex.
 	char avatar_mii[17];

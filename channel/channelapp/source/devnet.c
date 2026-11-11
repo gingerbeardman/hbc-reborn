@@ -37,6 +37,9 @@
 #include "usbmsd.h"
 #include "view.h"
 #include "xml.h"
+#include "netinit.h"
+#include "netwatch.h"
+#include "netprobe.h"
 
 #define HBC_NETLOG_LAYOUT_ONLY
 #include "../../../sdk/hbc_netlog/hbc_netlog.h"
@@ -280,7 +283,37 @@ static s32 status_json(char *buf, size_t size) {
 	n = grow(n, size, agent_overlay_state(buf + n, size - n));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"transfer_style\":\"%s\"", view_transfer_style()));
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"net_hang\":\"%s\"",
-			settings.net_hang_reload ? "reload" : "wait"));
+			settings.net_hang == NET_HANG_RELOAD ? "reload" :
+			settings.net_hang == NET_HANG_WAIT ? "wait" : "auto"));
+	// Fresh-IOS relaunches in a row for the network that led to this start
+	// (netinit.h), and the boot's network log facts.
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"net_relaunches\":%u",
+			(unsigned) netinit_relaunches()));
+	// The idle network check (netwatch.h): NCD's link status at the last
+	// check, networks found lost (each restarted), bad states that cleared
+	// by themselves, and the last lost network's reason.
+	n = grow(n, size, snprintf(buf + n, size - n, ",\"net_link\":%d,\"net_link_lost\":%u,"
+			"\"net_link_blips\":%u,\"net_link_last\":\"%s\"", (int) netwatch_link(),
+			(unsigned) netwatch_lost_count(), (unsigned) netwatch_blips(),
+			netwatch_last_reason()));
+	// The keep-alive and the gateway probe (netprobe.h).
+	{
+		u32 gw = netprobe_gateway();
+
+		n = grow(n, size, snprintf(buf + n, size - n, ",\"net_keepalive_sent\":%u,"
+				"\"net_keepalive_errors\":%u,\"net_keepalive_mode\":\"%s\","
+				"\"net_probe_ok\":%u,\"net_probe_failed\":%u,"
+				"\"net_auto_restarts\":%u,\"net_auto_relaunches\":%u,"
+				"\"net_gateway\":\"%u.%u.%u.%u\",\"net_gateway_source\":\"%s\","
+				"\"net_probe_port\":%u,\"net_probe_trusted\":%s",
+				(unsigned) netprobe_keepalive_sent(), (unsigned) netprobe_keepalive_errors(),
+				netprobe_keepalive_name(netprobe_keepalive_how()),
+				(unsigned) netprobe_probes_ok(), (unsigned) netprobe_probes_failed(),
+				(unsigned) netprobe_restarts(), (unsigned) netprobe_relaunches(),
+				(unsigned) (gw >> 24), (unsigned) ((gw >> 16) & 0xff),
+				(unsigned) ((gw >> 8) & 0xff), (unsigned) (gw & 0xff), netprobe_source(),
+				(unsigned) netprobe_port(), netprobe_trusted() ? "true" : "false"));
+	}
 	// The Wii's clock, the one file times (op L, S) come from.
 	n = grow(n, size, snprintf(buf + n, size - n, ",\"time\":%lld", (long long) time(NULL)));
 	// Since HBC started, as an agent's HBCS says: hbc.py send tells a new
@@ -500,15 +533,18 @@ bool devnet_handle(s32 s, const u8 *hdr, u32 client_ip) {
 		return true;
 	}
 
-	// HBCR: header byte 4, 'r' or 'w': what a hung network cleanup does,
-	// reload the channel or wait for the next start (`hbc.py net-hang`).
-	// Saved with the other settings when HBC exits or launches an app.
+	// HBCR: header byte 4, 'a', 'r' or 'w': what HBC does when the network
+	// will not come back in place (netinit.h): relaunch the channel at most
+	// 3 times in a row, reload it every time a cleanup hangs, or wait for the
+	// next start (`hbc.py net-hang`). Saved with the other settings when HBC
+	// exits or launches an app.
 	if (!memcmp(hdr, "HBCR", 4)) {
-		if (hdr[4] != 'r' && hdr[4] != 'w') {
+		if (hdr[4] != 'a' && hdr[4] != 'r' && hdr[4] != 'w') {
 			devfile_reply(s, -EINVAL, NULL, 0);
 			return true;
 		}
-		settings.net_hang_reload = hdr[4] == 'r';
+		settings.net_hang = hdr[4] == 'r' ? NET_HANG_RELOAD :
+				hdr[4] == 'w' ? NET_HANG_WAIT : NET_HANG_AUTO;
 		devfile_reply(s, 0, NULL, 0);
 		return true;
 	}

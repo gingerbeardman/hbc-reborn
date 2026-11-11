@@ -49,6 +49,14 @@ bool loader_tcp_initializing (void);
 bool loader_tcp_initialized (void);
 // Times the network came up since HBC started.
 u32 loader_net_starts (void);
+// The address the network came up with, 0 while it is down (no IOS call).
+u32 loader_net_ip (void);
+// A failed start, or a gateway silent after an automatic restart, wants a
+// fresh-IOS relaunch (netinit.h): pending, and taken once by main().
+bool loader_net_relaunch_pending (void);
+bool loader_take_net_relaunch (void);
+// Whether the relaunch taken was for a silent gateway (taken once too).
+bool loader_take_gateway_relaunch (void);
 u32 loader_tcp_stack_used (void);
 bool loader_handshaked (void);
 

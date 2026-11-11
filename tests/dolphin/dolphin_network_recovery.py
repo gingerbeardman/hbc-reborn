@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""A network cleanup that never returns: HBC carries on, or reloads if set to.
+"""A network cleanup that never returns: HBC relaunches, or carries on if set to.
 
 Requires a WAD built with HBC_TEST_STUCK_NET_CLEANUP, where Restart network
 wedges the TCP thread inside its cleanup while it holds its mutex. Never put
 that build on a Wii. HOME > HBC > Restart network must take HBC off the
-network. By default HBC then keeps running without it: Dolphin's log shows
-no IOS reload and no second launch of the channel for 40 s.
-With --reload, `hbc.py net-hang reload` is set first: after the 5 s watchdog
-the log must show one IOS reload and one more launch of the installed
-channel, which answers again and stays up: one relaunch, no loop.
-Usage: python3 tests/dolphin/dolphin_network_recovery.py [--reload] TEST-WAD
+network. By default (net-hang auto), and with --reload (`hbc.py net-hang
+reload` set first), after the 5 s watchdog and the countdown the log must show
+one IOS reload and one more launch of the installed channel, which answers
+again and stays up: one relaunch, no loop. In auto the relaunched HBC reports
+net_relaunches 1. With --wait (`hbc.py net-hang wait`) HBC keeps running
+without the network: Dolphin's log shows no IOS reload and no second launch of
+the channel for 40 s.
+Usage: python3 tests/dolphin/dolphin_network_recovery.py [--wait|--reload] TEST-WAD
 """
 import pathlib
 import shutil
@@ -35,7 +37,7 @@ def count(run, text):
 
 
 def main():
-    reload = sys.argv[1] == "--reload"
+    mode = {"--wait": "wait", "--reload": "reload"}.get(sys.argv[1], "auto")
     image = pathlib.Path(sys.argv[-1]).resolve()
     assert image.suffix == ".wad", "requires an installed channel"
     run = smoke.Dolphin(image)
@@ -45,10 +47,12 @@ def main():
         time.sleep(2)
         launches, ios_starts = count(run, LAUNCH), count(run, IOS_START)
         assert launches == 1, launches
-        assert hbc.status(run.address)["net_hang"] == "wait"
-        if reload:
-            hbc.set_net_hang(run.address, "reload")
-            assert hbc.status(run.address)["net_hang"] == "reload"
+        status = hbc.status(run.address)
+        assert status["net_hang"] == "auto", status["net_hang"]
+        assert status["net_relaunches"] == 0, status["net_relaunches"]
+        if mode != "auto":
+            hbc.set_net_hang(run.address, mode)
+            assert hbc.status(run.address)["net_hang"] == mode
         for buttons in ("h", "l", "a", "d", "d"):
             key(run.address, buttons)
         state = hbc.status(run.address)["overlay_ui"]
@@ -65,7 +69,7 @@ def main():
             pass
         assert count(run, LAUNCH) == launches, "relaunched before the watchdog"
 
-        if not reload:
+        if mode == "wait":
             # No reload: the menu carries on without the network.
             while time.monotonic() - pressed < 40:
                 assert count(run, LAUNCH) == launches, "relaunched with net-hang wait"
@@ -82,7 +86,7 @@ def main():
                 break
             time.sleep(0.5)
         else:
-            raise AssertionError("net-hang reload did not relaunch the channel")
+            raise AssertionError(f"net-hang {mode} did not relaunch the channel")
         relaunched = time.monotonic() - pressed
         # Only after the 5 s watchdog.
         assert relaunched >= 4.5, relaunched
@@ -91,8 +95,11 @@ def main():
         time.sleep(10)
         assert count(run, LAUNCH) == launches + 1, "relaunch loop"
         assert hbc.version(run.address) == smoke.expected
+        if mode == "auto":
+            relaunches = hbc.status(run.address)["net_relaunches"]
+            assert relaunches == 1, relaunches
         assert not run.faults(), run.faults()[:10]
-        print(f"PASS: wedged cleanup recovered through a fresh IOS and one channel relaunch "
+        print(f"PASS ({mode}): wedged cleanup recovered through a fresh IOS and one channel relaunch "
               f"{relaunched:.0f} s after Restart network; no loop", flush=True)
         passed = True
     finally:

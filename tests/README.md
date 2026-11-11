@@ -45,8 +45,11 @@ test's own docstring: edit the docstring, then run the script.
 | [`test_mii_res.py`](host/test_mii_res.py) | tools/mii_res.py against a synthetic RFL_Res.dat built here (no Nintendo data): the archive table, a faceline and a nose shape, an I4 and an RGB5A3 texture, OBJ and PNG output, and refusal of a damaged file. |
 | [`test_miidraw.py`](host/test_miidraw.py) | sdk/mii's drawing (miidraw.c) on the PC, through tests/host/miidraw_host: |
 | [`test_miifx.py`](host/test_miifx.py) | sdk/mii's effects (miifx.c) on the PC, through tests/host/miifx_host: |
-| [`test_netinit.py`](host/test_netinit.py) | Run the actual network wait against a busy/failed IOS and timed requests. |
+| [`test_netdiag.py`](host/test_netdiag.py) | Exercise offline network logging, queue overflow, and bounded SD log rotation. |
+| [`test_netinit.py`](host/test_netinit.py) | Run the actual network wait and fresh-IOS relaunch policy (netinit.c) on the PC. |
+| [`test_netprobe.py`](host/test_netprobe.py) | Run the idle keep-alive and gateway probe scheduling (netprobe.c) on the PC. |
 | [`test_netrecovery.py`](host/test_netrecovery.py) | Exercise cleanup supervision independently of the wedged worker mutex. |
+| [`test_netwatch.py`](host/test_netwatch.py) | Run the idle network check's detection and persistence logic (netwatch.c) on the PC. |
 | [`test_overlay_ui.py`](host/test_overlay_ui.py) | Build tests/host/overlay_preview/preview.c with the host compiler and check that the overlay's scripted walk through every menu reaches each page and closes. |
 | [`test_panic_host.py`](host/test_panic_host.py) | Build tests/host/panic_host/test.c on the host: the crash screen's plain logic (channel/channelapp/source/panic_core.h: where a stack walk may read, the backtrace, the cause text, the crash block `hbc.py crash` reads) and the stub's IPC wait (channel/channelapp/stub/ipc_wait.h: a limit, late replies taken). |
 | [`test_pywii.py`](host/test_pywii.py) | Python 3 checks for PyWii that need no Wii keys. |
@@ -76,12 +79,13 @@ test's own docstring: edit the docstring, then run the script.
 | --- | --- |
 | [`dolphin_app_badges.py`](dolphin/dolphin_app_badges.py) | Options > App badges in Dolphin: the retail WAD in a throwaway NAND. |
 | [`dolphin_exit_menu.py`](dolphin/dolphin_exit_menu.py) | HBC's HOME > Exit > System Menu in Dolphin: the installed WAD, a throwaway NAND with no System Menu. |
+| [`dolphin_hbc_reload.py`](dolphin/dolphin_hbc_reload.py) | HOME > HBC > Reload HBC and Restart network, and sd:/hbc-network.log, in Dolphin. |
 | [`dolphin_mboard.py`](dolphin/dolphin_mboard.py) | sdk/mboard end to end in Dolphin, with the real Wii Menu (4.3U). |
 | [`dolphin_meta.py`](dolphin/dolphin_meta.py) | Every meta.xml option, through HBC's menu in Dolphin. |
 | [`dolphin_mii.py`](dolphin/dolphin_mii.py) | sdk/mii end to end in Dolphin: the database on its NAND and an emulated Wii Remote's Miis, with nobody at a Wii. |
 | [`dolphin_mii_picker.py`](dolphin/dolphin_mii_picker.py) | HBC's Mii picker in Dolphin, driven as a person would: the retail WAD in a throwaway NAND whose Mii Channel database holds 20 Miis (19 in slots 0-18, one in slot 40), and a synthetic RFL_Res.dat on the SD card (no Nintendo data: its heads draw nothing visible, so the coins look plain). |
 | [`dolphin_mii_playground.py`](dolphin/dolphin_mii_playground.py) | HBC's Mii playground in Dolphin, driven as a person would: the retail WAD in a throwaway NAND with one Mii, a synthetic RFL_Res.dat on the SD card (no Nintendo data: the head draws nothing visible), and, with MII_REAL_BODIES set to a folder holding your own maleBody.brres and femaleBody.brres (from the Mii Channel), those bodies on the throwaway SD card too, for the real animations; with MII_REAL_EFFECTS, a folder with your own effect_nigaoe.breff and .breft, the effects too. |
-| [`dolphin_network_recovery.py`](dolphin/dolphin_network_recovery.py) | A network cleanup that never returns: HBC carries on, or reloads if set to. |
+| [`dolphin_network_recovery.py`](dolphin/dolphin_network_recovery.py) | A network cleanup that never returns: HBC relaunches, or carries on if set to. |
 | [`dolphin_network_retry.py`](dolphin/dolphin_network_retry.py) | A failed network start is cleaned up, then retried without a reload. |
 | [`dolphin_ogc_crash.py`](dolphin/dolphin_ogc_crash.py) | Crash an agent app in Dolphin, and check the agent recorded it and handed the crash on to libogc's crash screen. |
 | [`dolphin_options_edges.py`](dolphin/dolphin_options_edges.py) | Options > Grid edges in Dolphin (PR 7): the retail WAD in a throwaway NAND. |

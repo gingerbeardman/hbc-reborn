@@ -48,6 +48,43 @@ A theme can colour the dots with `badge_new` and `badge_updated` in its
 255, like `font_color`). The defaults are red `#ff3b30` for new and gold
 `#ffcc00` for updated.
 
+## The network
+
+HBC joins the network by itself when it starts, and keeps it up:
+
+- **A start that fails** (no address in time) is tried again after 2 s,
+  then 4, up to 32 s apart. The installed channel first restarts itself
+  with a fresh IOS instead, after a 3 s message: on real Wiis a start that
+  fails after an app exits rarely comes up in the same IOS, while a fresh
+  one brings it back. At most 3 times in a row; a start that comes up ends
+  the run.
+- **A network that drops while HBC sits idle** is noticed: every 4 s HBC
+  asks IOS for the link and the address, and a link that stays down, or an
+  address that goes or changes, for 15 s restarts the network (as HOME >
+  HBC > Restart network).
+- **An access point that stops forwarding to a quiet Wii** is kept aware of
+  it and checked: every 30 s HBC sends the gateway one small UDP packet, and
+  every 15 s it tries a TCP connection to it (any answer, even a refusal,
+  counts). Three missed answers in a row restart the network; if the gateway
+  still hasn't answered a minute later, the installed channel restarts itself
+  with a fresh IOS, at most 3 times in a row. A gateway that never answered
+  is never acted on.
+- **A network cleanup that hangs inside IOS** leaves the network off until
+  HBC starts again, so the installed channel says so for 10 s and restarts
+  itself with a fresh IOS, at most 3 times in a row. After that HBC carries
+  on without the network.
+
+None of this runs during a file transfer. A DOL started by a loader cannot
+restart the channel, so it only retries; `hbc.py net-hang wait` makes the
+installed channel do the same, and `hbc.py net-hang reload` restarts it after
+every hung cleanup, with no limit. HOME > HBC > **Reload HBC** starts the
+installed channel again by hand; **Restart network** joins the network again.
+
+HBC writes what it saw to `sd:/hbc-network.log` (the start, each attempt and
+its time, restarts, drops, probes that went unanswered, relaunches), up to
+1 MiB, then `sd:/hbc-network.old.log`. It holds addresses and IOS's answers,
+never the network's name or key.
+
 ## Your own app order
 
 Options > Sort applications by: **Custom** lists apps by the `<sort_id>`

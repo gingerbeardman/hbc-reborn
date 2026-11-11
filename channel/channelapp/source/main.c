@@ -35,6 +35,8 @@
 #include "browser.h"
 #include "home.h"
 #include "netrecovery.h"
+#include "netinit.h"
+#include "netdiag.h"
 #include "loader.h"
 #include "devnet.h"
 #include "bootlog.h"
@@ -53,6 +55,9 @@
 #include "../../../sdk/hbc_agent/hbc_agent.h"
 #include "xml.h"
 #include "title.h"
+
+_Static_assert(HBC_NETINIT_ADDR >= HBC_LASTLOG_ADDR + sizeof(hbc_lastlog_block),
+			   "the network relaunch record must not overlap the kept log");
 
 // Languages
 #include "spanish_mo.h"
@@ -397,11 +402,18 @@ void main_real(void) {
 	bool ahb_access;
 	bool no_ios_reload;
 	bool launch_bootmii;
-	// Set when a network cleanup hung: HBC leaves through a fresh IOS and
-	// starts the installed channel again (only when there is one).
-	bool network_reload = false;
+	// HBC starts the installed channel again through its own stub: Reload
+	// HBC, or the network's relaunch (netinit.h).
+	bool reload_hbc = false;
+	// ...through a fresh IOS first: a network cleanup hung, or the worker
+	// could not be stopped, and libogc's state must not be started over.
+	bool reset_network_ios = false;
+	// ...counted in the MEM2 relaunch record: HBC relaunched itself for the
+	// network (a hung cleanup, a failed start, a silent gateway).
+	bool network_relaunch = false;
+	// A hung cleanup seen by HOME's frame loop, for this loop to handle.
+	bool hang_pending = false;
 	bool can_reload;
-	u32 contents = 0;
 
 	u64 frame;
 	bool exit_about;
@@ -474,8 +486,9 @@ void main_real(void) {
 	devnet_set_init_ms(ticks_to_millisecs(diff_ticks(hbc_start, gettime())));
 
 	// A DOL sent over Wiiload may run as another title: only an installed
-	// channel is started again after a hung network cleanup.
-	can_reload = ES_GetTitleContentsCount(MY_TITLEID, &contents) >= 0 && contents;
+	// channel is started again (home.c), and only a channel running as
+	// itself relaunches by itself (netinit.h).
+	can_reload = home_can_reload();
 
 	while (!should_exit) {
 #if defined(HBC_TEST_CRASH) && HBC_TEST_CRASH >= 2
@@ -484,22 +497,65 @@ void main_real(void) {
 			{ vu32 *volatile bad = (vu32 *) 10; *bad = 0; }
 #endif
 		// A network cleanup has hung inside IOS (netrecovery.c): libogc
-		// cannot start the network again until HBC starts again, but the
-		// menu and app launches carry on without it (an app gets a fresh
-		// IOS). Only a developer's Wii, set with `hbc.py net-hang reload`,
-		// reloads the installed channel instead. A failed start alone never
-		// comes here; the TCP thread's own retry handles that.
-		if (netrecovery_take_hang()) {
-			hlog("Network: a cleanup never returned, off until HBC starts again\n");
-			if (settings.net_hang_reload && can_reload) {
-				hlog("Network: reloading HBC (net-hang reload)\n");
-				network_reload = true;
+		// cannot start the network again until HBC starts again. The
+		// installed channel, running as itself, relaunches with a fresh IOS
+		// after a countdown, at most HBC_NET_FAST_RELAUNCHES times in a row
+		// (netinit.h); `hbc.py net-hang reload` every time, from any
+		// installed channel. Otherwise, after them, and with net-hang wait,
+		// the menu and app launches carry on without the network (an app
+		// gets a fresh IOS).
+		if (hang_pending || netrecovery_take_hang()) {
+			bool relaunch = can_reload && (settings.net_hang == NET_HANG_RELOAD ||
+				(settings.net_hang == NET_HANG_AUTO && title_get_id() == MY_TITLEID &&
+				 netinit_fast()));
+
+			hang_pending = false;
+			loader_take_net_relaunch();
+			loader_take_gateway_relaunch();
+			hlog("Network: a cleanup never returned\n");
+			netdiag_event("Network cleanup stuck: %s", relaunch ? "relaunch countdown" :
+				"off until HBC starts again");
+			if (relaunch) {
+				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
+					"The network stopped responding.\nHBC will restart automatically.",
+					0, NET_POPUP_TIMEOUT_S);
+				hlog("Network: restarting HBC with a fresh IOS\n");
+				reload_hbc = reset_network_ios = network_relaunch = true;
 				should_exit = true;
 				break;
 			}
 			show_message_timed(v_current, DLGMT_INFO, DLGB_OK,
 				"The network stopped responding.\nIt comes back the next time HBC starts.",
 				0, NET_POPUP_TIMEOUT_S);
+		}
+		// The installed channel's start failed (its budget, or libogc's own
+		// timeout) and fewer than HBC_NET_FAST_RELAUNCHES relaunches in a
+		// row have happened (netinit.h): a fresh IOS is what brings the
+		// network back. After them the worker's backoff retries carry on.
+		// A gateway still silent after an automatic Restart network
+		// (netprobe.h) comes here too, with the network possibly up.
+		if (loader_take_net_relaunch()) {
+			bool gateway = loader_take_gateway_relaunch();
+
+			if (!can_reload) {
+				netdiag_event("Relaunch wanted, but no installed channel: backoff retries");
+			} else {
+				netdiag_event(gateway ? "Silent gateway: relaunch countdown" :
+					"Failed start: relaunch countdown");
+				show_message_timed(v_current, DLGMT_ERROR, DLGB_OK,
+					gateway ? "The network stopped responding.\nHBC will restart automatically." :
+					"The network failed to connect.\nHBC will restart automatically.",
+					0, HBC_NET_FAST_POPUP_S);
+				// The worker's own retry may have connected meanwhile.
+				if (!gateway && loader_tcp_initialized()) {
+					netdiag_event("Failed start: network up during the countdown, no relaunch");
+				} else {
+					hlog("Network: restarting HBC with a fresh IOS\n");
+					reload_hbc = reset_network_ios = network_relaunch = true;
+					should_exit = true;
+					break;
+				}
+			}
 		}
 #ifdef GDBSTUB
 		if (gdb) {
@@ -629,6 +685,17 @@ void main_real(void) {
 
 			case HOME_NETWORK:
 				loader_tcp_restart ();
+				break;
+
+			case HOME_NETWORK_HANG:
+				hang_pending = true;
+				break;
+
+			case HOME_RELOAD:
+				netdiag_event("Reload HBC requested: %016llx", (unsigned long long) MY_TITLEID);
+				hlog("Reload HBC\n");
+				reload_hbc = true;
+				should_exit = true;
 				break;
 
 			case HOME_PLAYGROUND:
@@ -982,8 +1049,25 @@ void main_real(void) {
 	// to do any pending work if the tcp thread does block.
 	// A worker stuck in a cleanup cannot stop: park it, so it never runs
 	// again over the app, the stub or libogc's unfinished state.
-	if (!loader_deinit ())
+	netdiag_event("Leaving HBC: app %s, reload %d, relaunch %d, restart %d, shutdown %d, bootmii %d",
+		reloced ? launch_dir : "(none)", reload_hbc, network_relaunch, restart, shutdown,
+		launch_bootmii);
+	if (!loader_deinit ()) {
 		loader_tcp_park ();
+		// Never start the network again over libogc's unfinished state.
+		if (reload_hbc)
+			reset_network_ios = true;
+	}
+	if (network_relaunch) {
+		netinit_record next;
+
+		netinit_next(&next);
+		netdiag_event("Network relaunch: %sIOS%d, relaunch %u in a row",
+			reset_network_ios ? "fresh " : "", (int) IOS_GetVersion(),
+			(unsigned) next.relaunches);
+	}
+	// The last write before the card goes: nothing touches SD after this.
+	netdiag_flush(true);
 #ifdef ENABLE_UPDATES
         http_deinit ();
 #endif
@@ -1004,14 +1088,24 @@ void main_real(void) {
 	settings.sideways_remotes = hbc_agent_sideways_remotes();
 	settings_save();
 
-	if (network_reload) {
-		// Skips the network cleanup that hung: the old worker stays parked
-		// with its buffers until the channel starts again.
-		s32 result = __IOS_LaunchNewIOS(IOS_GetVersion());
-		gprintf("network recovery IOS reload: %d\n", result);
-		(void) result;
+	if (reload_hbc) {
+		if (reset_network_ios) {
+			// Skips the network cleanup that hung: the old worker stays
+			// parked with its buffers until the channel starts again.
+			s32 result = __IOS_LaunchNewIOS(IOS_GetVersion());
+			gprintf("network recovery IOS reload: %d\n", result);
+			(void) result;
+		}
+		if (network_relaunch) {
+			// Counted across the relaunch (netinit.h); Reload HBC leaves no
+			// record, so it starts again from 0.
+			netinit_record *rec = (netinit_record *) HBC_NETINIT_ADDR;
+
+			netinit_next(rec);
+			DCFlushRange(rec, sizeof(*rec));
+		}
 		// The same way back an app takes: this build's stub, told to start
-		// the installed channel.
+		// the installed channel, which IOS starts with its own IOS.
 		memcpy((void *) 0x80001800, stub_bin, stub_bin_size);
 		*conf_title_id = MY_TITLEID;
 		*conf_magic = STUB_MAGIC;
@@ -1078,6 +1172,16 @@ int main(int argc, char *argv[]) {
 #endif
 	hbc_start = gettime();
 	devnet_early_init();
+	{
+		// The network's relaunch record (netinit.h), before any allocation
+		// could reach it: read once, then cleared.
+		netinit_record *rec = (netinit_record *) HBC_NETINIT_ADDR;
+
+		DCInvalidateRange(rec, sizeof(*rec));
+		netinit_boot(rec);
+		memset(rec, 0, sizeof(*rec));
+		DCFlushRange(rec, sizeof(*rec));
+	}
 	zmem_init();
 	main_pre();
 	main_real();

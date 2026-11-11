@@ -86,12 +86,15 @@ counts the times the network came up since HBC started (HOME > HBC > Restart
 network adds one). `transfer_style` is how this start shows a file name too
 long for the on-screen transfer line: `scroll`, `bounce` or `truncate`,
 picked at random; `HBCT` with the name in header bytes 4-15 forces one until
-HBC restarts (`hbc.py transfer-style`). `net_hang` is what a network cleanup
-that never returns inside IOS does: `wait` (the default: the menu carries
-on, the network is off until HBC starts again) or `reload` (HBC reloads the
-installed channel at once, for a developer's Wii); `HBCR` with `r` or `w` in
-header byte 4 sets it, saved when HBC next exits or launches an app (`hbc.py
-net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
+HBC restarts (`hbc.py transfer-style`). `net_hang` is what HBC does when the
+network won't come back in place (a cleanup that never returns inside IOS, a
+failed start, a gateway still silent after an automatic restart; see
+"Network recovery" below): `auto` (the default: the installed channel
+restarts itself with a fresh IOS, at most 3 times in a row, then carries on
+without the network), `wait` (never restarts itself: the network is off
+until HBC starts again) or `reload` (restarts after every hung cleanup, for
+a developer's Wii); `HBCR` with `a`, `w` or `r` in header byte 4 sets it,
+saved when HBC next exits or launches an app (`hbc.py net-hang`). `startup` lists the startup steps as `"name":ms`, the time since
 `main()` at the end of each, in the order they finished; `playtime_cleared`
 (or `playtime_failed`) is the background write that clears the Wii Menu's
 play record, and `first_frame` the menu's first frame. `uptime_ms` (1.16.1) is the
@@ -475,6 +478,50 @@ channel again (Dolphin's `IOS.cpp` `SetupMemory` models the same clear). HBC
 therefore writes a copy of the block to MEM2 at `0x91800000`, reads it first
 thing in `main()`, and restores the target from it. An app that happens to
 use that memory costs only the copy, which its check word then rejects.
+
+### Network recovery
+
+The TCP worker (`loader.c`) starts the network with one budget across its
+attempts, and the menu watches every cleanup from outside (`netrecovery.c`):
+`net_deinit` waits for an IOS reply that may never come, and after one that
+hangs libogc cannot start the network again in the same HBC (its start keeps
+a private busy flag only an IOS reply clears).
+
+- `netinit.c`: the fresh-IOS relaunch. While fewer than 3 relaunches in a
+  row have happened, the installed channel running as itself gives a start
+  20 s and goes to the relaunch at libogc's own timeout instead of retrying in
+  the same IOS; a hung cleanup goes to the same relaunch. The count rides in
+  MEM2 at `0x91801140`, past the records above: magic `HBCR`, relaunches,
+  `magic ^ ~relaunches`, and the gateway that answered before a gateway
+  relaunch (else 0). HBC writes it only as it relaunches itself, reads and
+  clears it first thing in `main()`, so an app's return, Reload HBC or a Wii
+  Menu boot starts from 0. After 3, in a DOL, and with `net_hang` `wait`,
+  starts get 30 s and the backoff retries; a hung cleanup leaves the network
+  off. `reload` relaunches after every hung cleanup.
+- `netwatch.c`: every 4 s while idle, NCD's link status
+  (`/dev/net/ncd/manage` ioctlv 7) and IOS's address; a link that reads none
+  or wireless down (only when it read wired or wireless up as the network
+  came up), or an address that goes or changes, for 15 s restarts the
+  network.
+- `netprobe.c`: a keep-alive (one byte to the gateway's UDP port 9 every
+  30 s, from a socket bound to `INADDR_ANY:4298`; on `-EINVAL` before any send
+  worked, a connected socket, then the HBCU socket) and a probe (a
+  non-blocking TCP connect to the gateway every 15 s, port 80, else 53 or
+  443; a connection or a reset is an answer, 3 s of nothing a miss). The
+  gateway comes from NCD's static configuration (ioctlv 3) when it matches
+  the address, else `.1` of the /24. 3 misses in a row restart the network;
+  a gateway still silent 60 s later asks for the relaunch. Misses count only
+  once the gateway has answered.
+
+None of the checks runs while a file transfer is in progress. HBCS reports
+them: `net_relaunches` (the relaunches in a row that led to this start),
+`net_link`, `net_link_lost`, `net_link_blips`, `net_link_last`,
+`net_keepalive_sent`, `net_keepalive_errors`, `net_keepalive_mode`,
+`net_probe_ok`, `net_probe_failed`, `net_auto_restarts`,
+`net_auto_relaunches`, `net_gateway`, `net_gateway_source`, `net_probe_port`
+and `net_probe_trusted`. The worker queues every step for
+`sd:/hbc-network.log` without touching the card (`netdiag.c`); the menu
+writes the queue at most once a second and before HBC leaves.
 
 ## Discovery (HBCU)
 

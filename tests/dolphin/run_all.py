@@ -14,8 +14,8 @@ devkitPPC r41-2 for the libogc2 DOLs (see tests/README.md).
 --special also builds the two fault-injection channels in a temporary git
 worktree of HEAD (EXTRA_CFLAGS=-DHBC_TEST_INIT_FAILURE for a DOL, then
 -DHBC_TEST_STUCK_NET_CLEANUP for a WAD; loader.o is deleted between the two
-builds) and runs dolphin_network_retry.py and dolphin_network_recovery.py (default
-and --reload) on them. Never put those builds on a Wii. They are built from the
+builds) and runs dolphin_network_retry.py and dolphin_network_recovery.py (default,
+--wait and --reload) on them. Never put those builds on a Wii. They are built from the
 last commit, so commit a change first.
 
 usage: tests/dolphin/run_all.py [--only NAME,NAME] [--skip NAME,NAME] [--special]
@@ -56,6 +56,7 @@ TESTS = [
     ("app_badges", "dolphin_app_badges.py", [], ["apps/agent_app/agent_app.dol"], 600),
     ("transfer_progress", "dolphin_transfer_progress.py", [], ["apps/agent_app/agent_app.dol"], 600),
     ("exit_menu", "dolphin_exit_menu.py", [], [], 300),
+    ("hbc_reload", "dolphin_hbc_reload.py", [], [], 300),
     ("meta", "dolphin_meta.py", [], ["apps/agent_app/agent_app.dol"], 600),
     ("mii_picker", "dolphin_mii_picker.py", [], ["apps/agent_app/agent_app.dol"], 600),
     ("mii_playground", "dolphin_mii_playground.py", [], [], 300),
@@ -241,7 +242,7 @@ def main():
     tests = [t for t in TESTS]
     if opts.list:
         print("\n".join(t[0] for t in tests) + ("\nnetwork_retry\nnetwork_recovery\n"
-              "network_recovery --reload  (with --special)"))
+              "network_recovery --wait\nnetwork_recovery --reload  (with --special)"))
         return 0
     only = [s.strip() for s in opts.only.split(",") if s.strip()]
     skip = [s.strip() for s in opts.skip.split(",") if s.strip()]
@@ -260,6 +261,8 @@ def main():
             dol, wad = out / "init_failure-channel.dol", out / "stuck_net_cleanup-channel.wad"
         special = [("network_retry", "dolphin_network_retry.py", [str(dol)], 300),
                    ("network_recovery", "dolphin_network_recovery.py", [str(wad)], 300),
+                   ("network_recovery --wait", "dolphin_network_recovery.py",
+                    ["--wait", str(wad)], 300),
                    ("network_recovery --reload", "dolphin_network_recovery.py",
                     ["--reload", str(wad)], 300)]
         if only:

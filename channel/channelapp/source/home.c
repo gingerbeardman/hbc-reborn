@@ -27,6 +27,8 @@
 #include "gfx.h"
 #include "keyboard.h"
 #include "loader.h"
+#include "netdiag.h"
+#include "netrecovery.h"
 #include "miires.h"
 #include "avatar.h"
 #include "panic.h"
@@ -49,6 +51,10 @@ static char network_text[40];
 
 // What the user picked, for main() to carry out once the overlay is closed.
 static volatile home_action picked;
+// Reload HBC is offered only when the installed channel can be started.
+static bool can_reload;
+// Set once this overlay has been closed for a failed start's relaunch.
+static bool relaunch_closing;
 
 static void pick(void *user) {
 	picked = (home_action) (u32) user;
@@ -80,10 +86,12 @@ static hbc_agent_item hbc_items[] = {
 	{ "Exit to System Menu", NULL, pick, (void *) HOME_SYSTEM_MENU, HBC_AGENT_ITEM_CLOSE },
 	{ "Shutdown", NULL, pick, (void *) HOME_SHUTDOWN, HBC_AGENT_ITEM_CLOSE },
 	{ "Restart network", NULL, pick, (void *) HOME_NETWORK, HBC_AGENT_ITEM_CLOSE },
+	{ "Reload HBC", NULL, pick, (void *) HOME_RELOAD, HBC_AGENT_ITEM_CLOSE },
 	{ "Save Mii faces", NULL, save_mii_faces, NULL, 0 },
 	{ "Mii playground", NULL, pick, (void *) HOME_PLAYGROUND, HBC_AGENT_ITEM_CLOSE },
 };
 #define BOOTMII_ITEM 4
+#define RELOAD_ITEM 8
 
 // ---- Exit and DEV hooks --------------------------------------------------
 
@@ -151,6 +159,20 @@ static void on_frame(void *user) {
 	pressed[n] = 0;
 	if (n)
 		hbc_agent_push_keys(pressed);
+
+	// The network needs main() (netinit.h), which waits while the overlay
+	// is open: a cleanup that never returned (a relaunch's countdown, or
+	// the message that the network is off), or a failed start that wants a
+	// fresh-IOS relaunch. Close the overlay for it.
+	if (netrecovery_take_hang()) {
+		netdiag_event("Network cleanup stuck: closing HOME");
+		picked = HOME_NETWORK_HANG;
+		hbc_agent_home_close();
+	} else if (loader_net_relaunch_pending() && !relaunch_closing) {
+		relaunch_closing = true;
+		netdiag_event("Network relaunch wanted: closing HOME");
+		hbc_agent_home_close();
+	}
 }
 
 // ---- BootMii --------------------------------------------------------------
@@ -226,10 +248,24 @@ void home_init(void) {
 	if (!bootmii_is_installed(TITLEID_BOOTMII))
 		hbc_items[BOOTMII_ITEM].flags |= HBC_AGENT_ITEM_DISABLED;
 
+	// Reload HBC starts the installed channel again through HBC's stub. A
+	// DOL sent over Wiiload may run as another title, so it is greyed out
+	// when no channel is installed.
+	{
+		u32 contents = 0;
+		can_reload = ES_GetTitleContentsCount(MY_TITLEID, &contents) >= 0 && contents;
+	}
+	if (!can_reload)
+		hbc_items[RELOAD_ITEM].flags |= HBC_AGENT_ITEM_DISABLED;
+
 	// Slot 0 is the button left of Exit. The right one (slot 1) keeps the
 	// agent's default, Shot, which saves the frame to sd:/screenshots.
 	hbc_agent_set_slot_menu(0, "HBC", "The Homebrew Channel", hbc_items,
 							sizeof(hbc_items) / sizeof(hbc_items[0]));
+}
+
+bool home_can_reload(void) {
+	return can_reload;
 }
 
 bool home_requested(u32 buttons_down, u32 buttons_held) {
@@ -255,7 +291,9 @@ home_action home_show(void) {
 	u32 size = VIDEO_GetFrameBufferSize(vmode);
 	u8 *fb0 = (u8 *) HOME_FB_ADDR;
 	u8 *fb1 = fb0 + ((size + 31) & ~31);
-	u32 ip = net_gethostip();
+	// The address the network came up with: no IOS request while a cleanup
+	// may be hanging in IOS.
+	u32 ip = loader_tcp_initialized() ? loader_net_ip() : 0;
 
 	// Refresh the info rows; the overlay copies them each frame.
 	snprintf(version_text, sizeof(version_text), "%s", CHANNEL_BUILD_STR);
@@ -275,6 +313,7 @@ home_action home_show(void) {
 	// Runs its own frame loop until the user closes it (B at the top, or
 	// HOME), calling pick() or exit_choice() on the way out.
 	picked = HOME_NONE;
+	relaunch_closing = false;
 	hbc_agent_home_fb(vmode, fb0, fb1);
 	// A key that closed the overlay is still down: let HBC's loop see it
 	// as held, not as a new press.

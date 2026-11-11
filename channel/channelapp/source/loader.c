@@ -26,6 +26,11 @@
 #include "loader.h"
 #include "netinit.h"
 #include "netrecovery.h"
+#include "netdiag.h"
+#include "netwatch.h"
+#include "netprobe.h"
+#include "title.h"
+#include "xml.h"
 #include "devfile.h"
 #include "devnet.h"
 #include "bootlog.h"
@@ -182,13 +187,27 @@ typedef struct {
 static volatile u32 net_starts;
 // UDP discovery (HBCU) on the Wiiload port; reopened with each network start.
 static s32 discover_fd = -1;
+// The address the network came up with, 0 while it is down: HOME shows it
+// without asking IOS, which may be hanging in a cleanup.
+static volatile u32 net_ip;
+
+// The keep-alive and the gateway probe (netprobe.h). The probe is a
+// non-blocking TCP connect polled with net_connect, as tcp_connect does.
+static s32 keepalive_fd = -1, probe_fd = -1;
+static u64 probe_started, probe_polled;
+#define PROBE_POLL_MS 50
 
 static void discover_stop(void) {
+	// The keep-alive may borrow this socket (netprobe.h): it goes too.
+	if (keepalive_fd >= 0 && keepalive_fd == discover_fd)
+		keepalive_fd = -1;
 	if (discover_fd >= 0) {
 		net_close(discover_fd);
 		discover_fd = -1;
 	}
 }
+
+static void netprobe_close (void);
 
 // Restart and stop requests, read by the worker even while a busy start
 // holds its mutex: the menu never waits on that mutex for them.
@@ -203,7 +222,9 @@ static bool start_cancelled;
 // net_close() waits on IOS as well, and a Restart used to close it first,
 // where a hang had no watchdog at all.
 static void tcp_net_deinit (const char *reason, int *listener) {
-	(void) reason;
+	net_ip = 0;
+	netwatch_down();
+	netdiag_event("%s: net_deinit begin", reason);
 	// A restart (or exit) cancels a start between its IOS steps, and
 	// net_deinit() then waits for the step in flight. That step may take most
 	// of the start's own 30 s, so the 5 s cleanup watchdog would reload HBC
@@ -219,6 +240,7 @@ static void tcp_net_deinit (const char *reason, int *listener) {
 	// belongs to the stack that net_deinit() takes down. Inside the watchdog,
 	// because net_close() waits on IOS too.
 	discover_stop();
+	netprobe_close();
 	if (listener && *listener >= 0) {
 		net_close(*listener);
 		*listener = -1;
@@ -230,10 +252,332 @@ static void tcp_net_deinit (const char *reason, int *listener) {
 #endif
 	net_deinit();
 	netrecovery_cleanup_complete();
+	netdiag_event("%s: net_deinit complete", reason);
 }
 
 u32 loader_net_starts (void) {
 	return net_starts;
+}
+
+u32 loader_net_ip (void) {
+	return net_ip;
+}
+
+// A failed start, or a gateway still silent after an automatic Restart
+// network, asks main() for a fresh-IOS relaunch (netinit.h).
+static volatile bool net_relaunch_wanted;
+// The relaunch is for a silent gateway (netprobe.h): the network may well be
+// up, the relaunch still goes.
+static volatile bool net_relaunch_gateway;
+
+bool loader_take_gateway_relaunch (void) {
+	u32 level;
+	bool wanted;
+
+	_CPU_ISR_Disable(level);
+	wanted = net_relaunch_gateway;
+	net_relaunch_gateway = false;
+	_CPU_ISR_Restore(level);
+	return wanted;
+}
+
+bool loader_net_relaunch_pending (void) {
+	return net_relaunch_wanted;
+}
+
+bool loader_take_net_relaunch (void) {
+	u32 level;
+	bool wanted;
+
+	_CPU_ISR_Disable(level);
+	wanted = net_relaunch_wanted;
+	net_relaunch_wanted = false;
+	_CPU_ISR_Restore(level);
+	return wanted;
+}
+
+// Whether HBC may relaunch itself for the network: the installed channel,
+// running as itself (a DOL started by a loader has nothing to come back to),
+// unless `hbc.py net-hang wait` says never.
+static bool relaunch_allowed (void) {
+	return settings.net_hang != NET_HANG_WAIT && title_get_id() == MY_TITLEID;
+}
+
+// NCD's link status (netwatch.h): /dev/net/ncd/manage ioctlv 7, the call
+// libogc's net_init makes first. Word 0 of the answer is NCD's result, word
+// 1 the link status. Opened and closed for each call, as libogc does; the
+// answer and the vector have whole cache lines of their own.
+static s32 ncd_link_status (s32 *ncd_result) {
+	static char path[] ATTRIBUTE_ALIGN(32) = "/dev/net/ncd/manage";
+	static struct {
+		u32 out[8];
+		ioctlv v[1];
+	} ATTRIBUTE_ALIGN(32) io;
+	s32 fd, res;
+
+	*ncd_result = 0;
+	fd = IOS_Open(path, 0);
+	if (fd < 0)
+		return fd;
+	memset(io.out, 0, sizeof(io.out));
+	io.v[0].data = io.out;
+	io.v[0].len = sizeof(io.out);
+	DCFlushRange(&io, sizeof(io));
+	res = IOS_Ioctlv(fd, 7, 0, 1, io.v);
+	DCInvalidateRange(io.out, sizeof(io.out));
+	IOS_Close(fd);
+	if (res < 0)
+		return res;
+	*ncd_result = (s32) io.out[0];
+	if (*ncd_result)
+		return *ncd_result < 0 ? *ncd_result : -*ncd_result;
+	return (s32) io.out[1];
+}
+
+// What IOS says about the network right now, for the log: NCD's link status
+// and result, and the IP stack's address (0 when there is no stack).
+static void net_ios_report (const char *when) {
+	s32 ncd, link = ncd_link_status(&ncd);
+	struct in_addr ip = { net_get_status() == 0 ? net_gethostip() : 0 };
+
+	netdiag_event("%s: IOS link %d (%s, NCD %d), ip %s, net_get_status %d", when,
+		(int) link, netwatch_link_name(link), (int) ncd, inet_ntoa(ip),
+		(int) net_get_status());
+}
+
+// The idle check found the network gone (netwatch.h): from then until it is
+// up again, starts are Restart network with the backoff retries only, never
+// the fresh-IOS relaunch; every attempt logs what IOS reports.
+static volatile bool watch_recovery;
+static u32 watch_inits;
+static u64 watch_lost_at;
+
+// NCD's current configuration (/dev/net/ncd/manage ioctlv 3, GetConfig):
+// out vector 0 the 0x1b5c-byte config.dat image, out vector 1 the result.
+// Layout as Dolphin's WiiNetConfig: an 8-byte header, then 3 connections of
+// 0x91c bytes: flags (0x80 selected, 0x04 address by DHCP), ip, netmask,
+// gateway. A static selected connection whose address is ours gives the
+// gateway; otherwise .1 of our /24. The image holds the Wi-Fi key: only the
+// three addresses are read and the copy is wiped.
+#define NCD_CONFIG_SIZE 0x1b5c
+#define NCD_CONN_SIZE 0x91c
+static u32 rd32 (const u8 *p) {
+	return ((u32) p[0] << 24) | ((u32) p[1] << 16) | ((u32) p[2] << 8) | p[3];
+}
+
+static u32 find_gateway (u32 ip, char *how, size_t size) {
+	static char path[] ATTRIBUTE_ALIGN(32) = "/dev/net/ncd/manage";
+	static struct {
+		u32 result[8];
+		ioctlv v[2];
+	} ATTRIBUTE_ALIGN(32) io;
+	u32 derived = (ip & 0xffffff00) | 1;
+	u8 *cfg;
+	s32 fd, res;
+	int i;
+
+	cfg = memalign(32, (NCD_CONFIG_SIZE + 31) & ~31);
+	if (!cfg) {
+		snprintf(how, size, "derived .1, no memory");
+		return derived;
+	}
+	res = fd = IOS_Open(path, 0);
+	if (fd >= 0) {
+		memset(cfg, 0, NCD_CONFIG_SIZE);
+		memset(io.result, 0, sizeof(io.result));
+		io.v[0].data = cfg;
+		io.v[0].len = NCD_CONFIG_SIZE;
+		io.v[1].data = io.result;
+		io.v[1].len = sizeof(io.result);
+		DCFlushRange(cfg, NCD_CONFIG_SIZE);
+		DCFlushRange(&io, sizeof(io));
+		res = IOS_Ioctlv(fd, 3, 0, 2, io.v);
+		DCInvalidateRange(cfg, NCD_CONFIG_SIZE);
+		DCInvalidateRange(io.result, sizeof(io.result));
+		IOS_Close(fd);
+		if (res >= 0 && io.result[0])
+			res = -(s32) (io.result[0] & 0x7fffffff);
+	}
+	if (res < 0) {
+		snprintf(how, size, "derived .1, NCD config %d", (int) res);
+	} else {
+		snprintf(how, size, "derived .1, no selected connection");
+		for (i = 0; i < 3; i++) {
+			const u8 *c = cfg + 8 + i * NCD_CONN_SIZE;
+			u32 cip = rd32(c + 4), mask = rd32(c + 8), gw = rd32(c + 12);
+
+			if (!(c[0] & 0x80))
+				continue;
+			if (c[0] & 0x04) {
+				snprintf(how, size, "derived .1, DHCP");
+				break;
+			}
+			if (cip == ip && mask && gw && gw != ip && (gw & mask) == (ip & mask) &&
+					(gw & ~mask) != ~mask) {
+				snprintf(how, size, "NCD static config");
+				derived = gw;
+			} else {
+				snprintf(how, size, "derived .1, NCD static config unusable");
+			}
+			break;
+		}
+	}
+	memset(cfg, 0, NCD_CONFIG_SIZE);
+	free(cfg);
+	return derived;
+}
+
+static s32 nonblocking_socket (u32 type) {
+	s32 fd = net_socket(PF_INET, type, 0), flags;
+
+	if (fd < 0)
+		return fd;
+	flags = net_fcntl(fd, F_GETFL, 0);
+	if (flags >= 0)
+		flags = net_fcntl(fd, F_SETFL, flags | 4);
+	if (flags < 0) {
+		net_close(fd);
+		return flags;
+	}
+	return fd;
+}
+
+static void gateway_addr (struct sockaddr_in *sa, u16 port) {
+	memset(sa, 0, sizeof(*sa));
+	sa->sin_family = AF_INET;
+	sa->sin_len = sizeof(*sa);
+	sa->sin_port = htons(port);
+	sa->sin_addr.s_addr = netprobe_gateway();
+}
+
+static void probe_end (bool answered, s32 res) {
+	net_close(probe_fd);
+	probe_fd = -1;
+	netprobe_probe_result(gettime(), answered, res);
+	if (answered)
+		netinit_gateway_ok();
+}
+
+// One connect step: answered on a connection or a reset, missed on any other
+// error or after HBC_PROBE_TIMEOUT_MS.
+static void probe_step (void) {
+	struct sockaddr_in sa;
+	u64 now = gettime();
+	s32 res;
+
+	if (ticks_to_millisecs(now - probe_polled) < PROBE_POLL_MS)
+		return;
+	probe_polled = now;
+	gateway_addr(&sa, netprobe_port());
+	res = net_connect(probe_fd, (struct sockaddr *) &sa, sizeof(sa));
+	if (res == 0 || res == -EISCONN || res == -ECONNREFUSED || res == -ECONNRESET)
+		probe_end(true, res);
+	else if (res != -EINPROGRESS && res != -EALREADY)
+		probe_end(false, res);
+	else if (ticks_to_millisecs(now - probe_started) >= HBC_PROBE_TIMEOUT_MS)
+		probe_end(false, -ETIMEDOUT);
+}
+
+static void probe_start (void) {
+	probe_fd = nonblocking_socket(SOCK_STREAM);
+	if (probe_fd < 0) {
+		s32 res = probe_fd;
+
+		probe_fd = -1;
+		netprobe_probe_result(gettime(), false, res);
+		return;
+	}
+	probe_started = gettime();
+	probe_polled = 0;
+	probe_step();
+}
+
+// Sets up the keep-alive's socket for the current mode (netprobe.h): a fd,
+// or a negative error. The discovery socket is borrowed, never closed here.
+static s32 keepalive_open (void) {
+	struct sockaddr_in sa;
+	u32 reuse = 1;
+	s32 fd, res;
+
+	if (netprobe_keepalive_how() == KEEPALIVE_DISCOVER_SENDTO)
+		return discover_fd >= 0 ? discover_fd : -EBADF;
+	fd = nonblocking_socket(SOCK_DGRAM);
+	if (fd < 0)
+		return fd;
+	if (netprobe_keepalive_how() == KEEPALIVE_BOUND_SENDTO) {
+		// As discover_open: IOS sends from a socket bound to INADDR_ANY.
+		net_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+		memset(&sa, 0, sizeof(sa));
+		sa.sin_family = AF_INET;
+		sa.sin_len = sizeof(sa);
+		sa.sin_port = htons(HBC_KEEPALIVE_LOCAL_PORT);
+		sa.sin_addr.s_addr = 0;
+		res = net_bind(fd, (struct sockaddr *) &sa, sizeof(sa));
+	} else {
+		gateway_addr(&sa, HBC_KEEPALIVE_PORT);
+		res = net_connect(fd, (struct sockaddr *) &sa, sizeof(sa));
+	}
+	if (res < 0) {
+		net_close(fd);
+		return res;
+	}
+	return fd;
+}
+
+static void keepalive_drop (void) {
+	if (keepalive_fd >= 0 && keepalive_fd != discover_fd)
+		net_close(keepalive_fd);
+	keepalive_fd = -1;
+}
+
+static void keepalive_send (void) {
+	static u8 byte;
+	struct sockaddr_in sa;
+	s32 res;
+
+	if (keepalive_fd < 0 || (netprobe_keepalive_how() == KEEPALIVE_DISCOVER_SENDTO &&
+			keepalive_fd != discover_fd)) {
+		keepalive_fd = -1;
+		res = keepalive_open();
+		if (res < 0) {
+			if (netprobe_keepalive_result(gettime(), res))
+				keepalive_drop();
+			return;
+		}
+		keepalive_fd = res;
+	}
+	if (netprobe_keepalive_how() == KEEPALIVE_CONNECTED_SEND) {
+		res = net_send(keepalive_fd, &byte, 1, 0);
+	} else {
+		gateway_addr(&sa, HBC_KEEPALIVE_PORT);
+		res = net_sendto(keepalive_fd, &byte, 1, 0, (struct sockaddr *) &sa, sizeof(sa));
+	}
+	if (netprobe_keepalive_result(gettime(), res))
+		keepalive_drop();
+}
+
+static void netprobe_close (void) {
+	if (probe_fd >= 0) {
+		net_close(probe_fd);
+		probe_fd = -1;
+	}
+	keepalive_drop();
+	netprobe_down();
+}
+
+// The gateway stayed silent after the automatic restart: the fresh-IOS
+// relaunch, at most HBC_NET_FAST_RELAUNCHES in a row (netinit.h).
+static void netprobe_relaunch (void) {
+	if (relaunch_allowed() && netinit_gateway_relaunch(netprobe_gateway())) {
+		netdiag_event("Probe: fresh-IOS relaunch requested");
+		hlog("Network: gateway silent after a restart, restarting HBC\n");
+		net_relaunch_gateway = true;
+		net_relaunch_wanted = true;
+	} else {
+		netdiag_event("Probe: no relaunch (%s)", relaunch_allowed() ?
+			"limit reached" : "not the installed channel, or net-hang wait");
+		netprobe_relaunch_declined();
+	}
 }
 
 static void * ld_tcp_func (void *arg) {
@@ -245,7 +589,9 @@ static void * ld_tcp_func (void *arg) {
 	u8 buf[16];
 	u16 wiiload_version;
 	u8 retries;
-	u64 init_start;
+	u64 init_start, attempt_start;
+	u32 budget_ms;
+	bool fast;
 
 	mask = 0;
 
@@ -277,6 +623,7 @@ static void * ld_tcp_func (void *arg) {
 			_CPU_ISR_Restore(level);
 			gprintf ("reinit net\n");
 			hlog("Network: restarting\n");
+			netdiag_event("Restart network applied by the worker");
 			tcp_net_deinit("Restart", &s);
 			ta->state = LDTCPS_UNINITIALIZED;
 			ta->cmd = LDTCPCMD_INIT;
@@ -285,28 +632,48 @@ static void * ld_tcp_func (void *arg) {
 		if (ta->cmd == LDTCPCMD_INIT) {
 			ta->cmd = LDTCPCMD_IDLE;
 
+			// The installed channel's first relaunches in a row go fast
+			// (netinit.h); otherwise the backoff retries. Not while the idle
+			// check's recovery runs: that one is logged, not relaunched.
+			fast = netinit_fast() && relaunch_allowed() && !watch_recovery;
+			if (watch_recovery) {
+				char when[48];
+
+				snprintf(when, sizeof(when), "Watch recovery INIT %u", (unsigned) ++watch_inits);
+				net_ios_report(when);
+			}
+			budget_ms = fast ? HBC_NET_INIT_FAST_MS : HBC_NET_INIT_TIMEOUT_MS;
+			netdiag_event("INIT budget %u ms%s", (unsigned) budget_ms,
+				fast ? ", fast relaunch on failure" : "");
 			init_start = gettime();
 			retries = 32;
 			ta->state = LDTCPS_INITIALIZING;
 
 			while (retries) {
+				attempt_start = gettime();
 				res = BOOTLOG("net_init_async", net_init_async(NULL, NULL));
+				netdiag_event("Attempt %u/32: net_init_async %d", 33u - retries, (int) res);
 
 				if (res) {
 					gprintf("net_init_async failed: %d\n", res);
 					break;
 				}
 
-				// One 30 s budget for all the attempts; restart and stop are
+				// One budget for all the attempts; restart and stop are
 				// seen every 50 ms, so a start that IOS never finishes no
 				// longer holds the worker, or an app launch, forever.
-				res = BOOTLOG("net_init (wait)", netinit_wait(init_start, &tcp_stop, &tcp_restart));
+				res = BOOTLOG("net_init (wait)", netinit_wait(init_start, budget_ms,
+						33u - retries, &tcp_stop, &tcp_restart));
+				netdiag_event("Attempt %u ended: %d after %llu ms", 33u - retries, (int) res,
+					(unsigned long long) ticks_to_millisecs(gettime() - attempt_start));
+				if (watch_recovery && res < 0)
+					net_ios_report("Watch recovery attempt failed");
 
 				if (res == -ECANCELED) {
 					start_cancelled = true;
 					break;
 				}
-				if (ticks_to_millisecs(gettime() - init_start) >= HBC_NET_INIT_TIMEOUT_MS) {
+				if (ticks_to_millisecs(gettime() - init_start) >= budget_ms) {
 					// netinit_wait's own -ETIMEDOUT: IOS never answered, so
 					// the cleanup waits out that step like a cancelled one.
 					if (res == -ETIMEDOUT)
@@ -314,7 +681,9 @@ static void * ld_tcp_func (void *arg) {
 					break;
 				}
 
-				if ((res == -EAGAIN) || (res == -ETIMEDOUT)) {
+				// Fast: libogc's own timeout (no address) goes straight to
+				// the relaunch; a retry in the same IOS rarely helped.
+				if (netinit_retry(res, fast)) {
 					gprintf ("net_init failed: %d, trying again...\n", res);
 					retries--;
 					usleep(50 * 1000);
@@ -330,18 +699,36 @@ static void * ld_tcp_func (void *arg) {
 			if (!injected_init_failure && res >= 0) {
 				injected_init_failure = true;
 				res = -ETIMEDOUT;
+				netdiag_event("TEST: injected INIT timeout");
 			}
 #endif
 			if (res < 0) {
 				gprintf ("net_init failed: %d\n", res);
-				hlog("Network: no connection (%d), trying again\n", (int) res);
-				// Clean up the half-started stack before the menu's retry; a
-				// cancelled start is cleaned up by the restart or exit above.
+				netdiag_event("INIT gave up: %d", (int) res);
+				// Clean up the half-started stack before the menu's retry or
+				// the relaunch; a cancelled start is cleaned up by the
+				// restart or exit above. A cleanup that never returns goes to
+				// the menu's watchdog (netrecovery.c) instead.
 				if (res != -ECANCELED) {
 					netrecovery_request();
 					tcp_net_deinit("Failed INIT", NULL);
 				}
 				ta->state = LDTCPS_UNINITIALIZED;
+				if (res != -ECANCELED && fast && !tcp_stop && !tcp_restart) {
+					hlog("Network: no connection (%d), restarting HBC\n", (int) res);
+					netdiag_event("Failed start: fresh-IOS relaunch requested");
+					net_relaunch_wanted = true;
+				} else if (res != -ECANCELED) {
+					hlog("Network: no connection (%d), trying again\n", (int) res);
+					if (watch_recovery)
+						netdiag_event("Watch recovery INIT %u gave up: %d, backoff retry, no relaunch",
+							(unsigned) watch_inits, (int) res);
+				}
+				// An automatic restart for a silent gateway that has not
+				// come back in time goes to the relaunch (netprobe.h).
+				if (!net_relaunch_wanted && !tcp_stop && !tcp_restart &&
+						netprobe_poll(gettime(), false, false) == NETPROBE_RELAUNCH)
+					netprobe_relaunch();
 				continue;
 			}
 
@@ -349,13 +736,43 @@ static void * ld_tcp_func (void *arg) {
 			{
 				struct in_addr ip = { net_gethostip () };
 
+				net_ip = ip.s_addr;
 				hlog("Network: up at %s\n", inet_ntoa(ip));
+				netdiag_event("Network up at %s", inet_ntoa(ip));
 			}
 			net_starts++;
+			netinit_up();
+			{
+				s32 ncd, link = ncd_link_status(&ncd);
+
+				if (ncd)
+					netdiag_event("NCD link status result %d", (int) ncd);
+				netwatch_up(gettime(), net_ip, link);
+			}
+			{
+				static bool known_checked;
+				char how[48];
+				u32 gw;
+
+				if (!known_checked) {
+					known_checked = true;
+					if (netinit_known_gateway())
+						netprobe_trust(netinit_known_gateway());
+				}
+				gw = find_gateway(net_ip, how, sizeof(how));
+				netprobe_up(gettime(), net_ip, gw, how);
+			}
+			if (watch_recovery) {
+				netdiag_event("Watch recovery: up again after %u INITs, %llu ms",
+					(unsigned) watch_inits,
+					(unsigned long long) ticks_to_millisecs(gettime() - watch_lost_at));
+				watch_recovery = false;
+			}
 
 			mask = net_gethostip () & 0xffff0000;
 
 			s = BOOTLOG("tcp_listen", tcp_listen (LD_TCP_PORT, 3));
+			netdiag_event("tcp_listen %d", s);
 
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
@@ -388,7 +805,62 @@ static void * ld_tcp_func (void *arg) {
 		}
 
 		if (ta->cmd == LDTCPCMD_ACCEPT) {
+			const char *lost = NULL;
+			const char *name;
+			u32 done, total;
+			bool busy;
+
 			ta->cmd = LDTCPCMD_IDLE;
+			busy = devfile_progress(&name, &done, &total) != 0;
+			// While idle, ask IOS whether the network is still there
+			// (netwatch.h): a few calls every few seconds.
+			if (netwatch_due(gettime())) {
+				s32 ncd, link = ncd_link_status(&ncd);
+				u32 ip = net_gethostip();
+
+				if (netwatch_sample(gettime(), link, ip, busy) == NETWATCH_LOST) {
+					lost = "Watch: network lost";
+					hlog("Network: lost while idle, restarting it\n");
+				}
+			}
+			// The keep-alive and the gateway probe (netprobe.h).
+			if (!lost) {
+				if (probe_fd >= 0)
+					probe_step();
+				switch (netprobe_poll(gettime(), true, busy)) {
+				case NETPROBE_PROBE:
+					probe_start();
+					break;
+				case NETPROBE_KEEPALIVE:
+					keepalive_send();
+					break;
+				case NETPROBE_RESTART:
+					lost = "Probe: gateway silent";
+					hlog("Network: gateway silent while idle, restarting the network\n");
+					break;
+				case NETPROBE_RELAUNCH:
+					netprobe_relaunch();
+					break;
+				default:
+					break;
+				}
+			}
+			if (lost) {
+				// Restart network, as HOME > HBC > Restart network. A failed
+				// start then retries with the backoff in this IOS; after a
+				// probe's restart, a gateway still silent HBC_PROBE_RESTART_MS
+				// later goes to the fresh-IOS relaunch (netprobe.h). A
+				// cleanup that hangs goes to the menu's watchdog.
+				net_ios_report(lost);
+				watch_recovery = true;
+				watch_inits = 0;
+				watch_lost_at = gettime();
+				netrecovery_request();
+				tcp_net_deinit(strncmp(lost, "Watch", 5) ? "Probe restart" : "Watch restart", &s);
+				ta->state = LDTCPS_UNINITIALIZED;
+				ta->cmd = LDTCPCMD_INIT;
+				continue;
+			}
 			if (discover_fd >= 0 &&
 					discover_poll(discover_fd, mask, "Homebrew Channel", false) < 0)
 				discover_stop();
@@ -401,6 +873,8 @@ static void * ld_tcp_func (void *arg) {
 			sn = tcp_accept (s, (struct sockaddr *) &sa, &len_sa);
 			if (sn == -EAGAIN)
 				continue;
+			if (sn < 0)
+				netdiag_event("net_accept %d", sn);
 
 			if (sn == -ENETRESET) {
 				gprintf("ENETRESET, reiniting\n");
@@ -488,6 +962,12 @@ static ld_tcp_arg ta_tcp;
 void loader_init (void) {
 	int res;
 
+	netdiag_event("HBC %s boot: IOS%u rev %u, title %016llx", CHANNEL_BUILD_STR,
+		(unsigned) IOS_GetVersion(), (unsigned) IOS_GetRevision(),
+		(unsigned long long) title_get_id());
+	if (netinit_relaunches())
+		netdiag_event("Network relaunch %u in a row led to this boot",
+			(unsigned) netinit_relaunches());
 	devnet_init ();
 
 	if (usb_isgeckoalive (USBGECKO_CHANNEL)) {
@@ -615,8 +1095,11 @@ bool loader_deinit (void) {
 }
 
 void loader_tcp_park (void) {
-	if (ta_tcp.running)
-		LWP_SuspendThread(ld_tcp_thread);
+	if (ta_tcp.running) {
+		s32 res = LWP_SuspendThread(ld_tcp_thread);
+
+		netdiag_event("TCP worker parked: %d", (int) res);
+	}
 }
 
 void loader_tcp_init (void) {
@@ -638,6 +1121,9 @@ static u32 net_retry_ms;
 // HOME > HBC > Restart network. The worker sees the flag even in a busy
 // start; an idle one is woken by loader_signal_threads().
 void loader_tcp_restart (void) {
+	netdiag_event("Restart network requested; state %d", ta_tcp.state);
+	// Asked for by hand: the usual start, fresh-IOS relaunch included.
+	watch_recovery = false;
 	// The flag first: a worker coming up in between then keeps the request
 	// (netrecovery_ready_unless), or clears it before it is made.
 	tcp_restart = true;
@@ -645,6 +1131,8 @@ void loader_tcp_restart (void) {
 }
 
 void loader_signal_threads (void) {
+	// Both the app list and the HOME overlay's frame loop come here.
+	netdiag_flush(false);
 	if (LWP_MutexTryLock(ta_gecko.cmutex) == 0) {
 		if (loader_gecko_initialized () && !ta_gecko.handshaked) {
 			ta_gecko.cmd = LDGECKOCMD_POLL;

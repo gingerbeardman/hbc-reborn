@@ -408,6 +408,7 @@ bool settings_load(void) {
 	mxml_node_t *root, *node;
 	const char *s;
 	const char *titlepath;
+	int i;
 	STACK_ALIGN(char, fn, ISFS_MAXPATH, 32);
 
 	settings.device = -1;
@@ -417,7 +418,7 @@ bool settings_load(void) {
 	settings.edge_paging = 0;
 	settings.new_badges = 0;
 	settings.sideways_remotes = 0;
-	settings.net_hang_reload = 0;
+	settings.net_hang = NET_HANG_AUTO;
 	memset(settings.app_sel, 0, sizeof(settings.app_sel));
 	memset(settings.avatar_mii, 0, sizeof(settings.avatar_mii));
 
@@ -477,7 +478,12 @@ bool settings_load(void) {
 	settings.edge_paging = _get_elem_int(node, "edge_paging", 0) == 1;
 	settings.new_badges = _get_elem_int(node, "new_badges", 0) == 1;
 	settings.sideways_remotes = _get_elem_int(node, "sideways_remotes", 0) == 1;
-	settings.net_hang_reload = _get_elem_int(node, "net_hang_reload", 0) == 1;
+	// net_hang_reload is what HBC 1.14.31-1.16.1 wrote for reload.
+	settings.net_hang = _get_elem_int(node, "net_hang_reload", 0) == 1 ?
+			NET_HANG_RELOAD : NET_HANG_AUTO;
+	i = _get_elem_int(node, "net_hang", -1);
+	if (i == NET_HANG_AUTO || i == NET_HANG_RELOAD || i == NET_HANG_WAIT)
+		settings.net_hang = i;
 	s =_get_elem_cdata(node, "app_sel");
 	if (s) {
 		strncpy(settings.app_sel, s, sizeof(settings.app_sel));
@@ -542,9 +548,14 @@ bool settings_save(void) {
 	mxmlNewInteger(node, settings.new_badges);
 	node = mxmlNewElement(data, "sideways_remotes");
 	mxmlNewInteger(node, settings.sideways_remotes);
-	if (settings.net_hang_reload) {
+	if (settings.net_hang != NET_HANG_AUTO) {
+		node = mxmlNewElement(data, "net_hang");
+		mxmlNewInteger(node, settings.net_hang);
+	}
+	// So an older HBC started on the same card still reloads.
+	if (settings.net_hang == NET_HANG_RELOAD) {
 		node = mxmlNewElement(data, "net_hang_reload");
-		mxmlNewInteger(node, settings.net_hang_reload);
+		mxmlNewInteger(node, 1);
 	}
 
 	if (strlen(settings.app_sel) > 0) {

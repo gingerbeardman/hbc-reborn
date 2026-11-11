@@ -470,9 +470,9 @@ INFO_PAGES = ["System", "Video", "Storage", "USB", "Network"]
 
 
 def set_net_hang(wii, mode):
-    """What a hung network cleanup does on the Wii: wait or reload (HBCR)."""
-    if mode not in ("wait", "reload"):
-        raise SystemExit("hbc.py: net-hang is wait or reload")
+    """What HBC does when the network won't come back: auto, reload or wait (HBCR)."""
+    if mode not in ("auto", "wait", "reload"):
+        raise SystemExit("hbc.py: net-hang is auto, wait or reload")
     request(wii, b"HBCR" + mode[:1].encode() + bytes(11))
 
 
@@ -1577,7 +1577,7 @@ Commands
     status              what is running: version, IOS, memory, SD card, network
     hw                  the Wii's hardware and settings, as DEV > Info shows them
     transfer-style [S]  how HBC shows a long name it is moving (for testing)
-    net-hang [MODE]     wait, or reload HBC, when the network hangs (developers)
+    net-hang [MODE]     auto, wait or reload: HBC restarting itself for the network
     mii-faces           copy the Wii Menu's Mii faces to sd:/mii/RFL_Res.dat
     version             just the version (ends in " agent" for an app, below)
     wait [SECONDS]      wait until HBC answers, after a reboot (default 90)
@@ -1884,16 +1884,20 @@ short with "...": HBC picks one at random each time it starts. This sets
 the one to use until HBC restarts, for testing; with no name it prints the
 current one (HBCS transfer_style). HBC 1.10.4 on.""",
     "net-hang": """\
-hbc.py net-hang [wait|reload]
+hbc.py net-hang [auto|wait|reload]
 
-What HBC does when a network cleanup never returns inside IOS. libogc cannot
-start the network again until HBC itself starts again, so by default HBC
-waits: the menu and app launches go on, and the network is back the next
-time HBC starts. "reload" has HBC reload the installed channel at once
-instead, for a developer's Wii that must stay reachable; if the network
-hangs on every start, that Wii reloads every few seconds until it is set
-back to "wait". Kept in HBC's settings when HBC next exits or launches an
-app. With no mode it prints the current one (HBCS net_hang).""",
+What HBC does when the network won't come back in place: a network cleanup
+that never returns inside IOS (libogc cannot start the network again until
+HBC itself starts again), a start that fails, or a gateway still silent
+after HBC restarted the network by itself. "auto" (the default) has the
+installed channel restart itself with a fresh IOS after a short countdown,
+at most 3 times in a row; after that, and in a DOL started by a loader, HBC
+carries on without the network until it next starts, retrying failed
+starts. "wait" never restarts HBC by itself. "reload" restarts it after
+every hung cleanup, with no limit, for a developer's Wii that must stay
+reachable; if the network hangs on every start, that Wii reloads every few
+seconds until it is set back. Kept in HBC's settings when HBC next exits or
+launches an app. With no mode it prints the current one (HBCS net_hang).""",
     "hw": """\
 hbc.py hw [--json] [PAGE ...]
 
