@@ -122,6 +122,7 @@ include to get only the crash block and kept-log layouts, as HBC itself does.
 | `s32 hbc_agent_home(const struct _gx_rmodeobj *rmode)` | Opens the HOME overlay, runs its own loop until the user closes it, and returns 0, or a negative error when there is no memory. `rmode` may be NULL for the preferred video mode. Needs `WPAD_Init()`. |
 | `s32 hbc_agent_home_fb(rmode, void *fb0, void *fb1)` | The same, drawing into framebuffers the app lends it: each at least `fbWidth * xfbHeight * 2` bytes, 32-byte aligned, in MEM1 or MEM2, and not the one on screen. `fb1` may be NULL (one buffer; the menus may tear while they slide). The overlay reads the app's frame in place and needs no memory of its own. |
 | `bool hbc_agent_home_pending(void)` | True once when `hbc.py key h` asked for the overlay. |
+| `void hbc_agent_home_close(void)` | Closes the open overlay as B at the top would, so `hbc_agent_home()` returns. Call it from the config's `on_frame` when the app has to act outside the overlay (HBC shows its network countdown this way). Does nothing while no overlay is open. |
 | `void hbc_agent_push_keys(const char *keys)` | Presses overlay keys as `hbc.py key` does: each of `udlrabh12w` is up, down, left, right, A, B, HOME, 1, 2 and WAV, one every 12 frames; other characters are skipped. For another input device, such as a USB keyboard read from `on_frame`. `HBC_AGENT_HAS_PUSH_KEYS` is defined when it exists. |
 | `void hbc_agent_toast(const char *msg)` | Shows a short message at the top of the overlay for a few seconds. From `on_save` or a slot item it replaces the overlay's own "Saved" or "Couldn't save". |
 | `void hbc_agent_set_slot(int slot, const char *label, void (*press)(void *user), void *user)` | Sets one of the two bar buttons beside Exit: slot 0 on its left (blank by default), slot 1 on its right (Shot by default). `press` runs in the app's thread after the overlay closes. A NULL `label` restores the default. |
@@ -353,18 +354,22 @@ framebuffers and handling Exit through HBC's own shutdown. Its HBC slot holds
 what the old HOME menu had: HBC's and IOS's versions, the Wii's IP, About,
 Launch BootMii, Exit to System Menu, and Shutdown, plus Restart network, which
 shuts the network down and joins it again (for a Wi-Fi connection that went
-stale), and Save Mii faces, which copies the Wii Menu's Mii face models
+stale), Reload HBC, which starts the installed channel again (greyed out when
+there is none), and Save Mii faces, which copies the Wii Menu's Mii face models
 (`RFL_Res.dat`) and the Mii Channel's male and female bodies with their
 animations (`maleBody.brres`, `femaleBody.brres`) and effects
 (`effect_nigaoe.breff`, `.breft`) to `sd:/mii` for apps that draw Miis
 ([docs/mii/README.md](../../docs/mii/README.md#the-face-models-rfl_resdat)).
 
-When the network fails to start, HBC tries again by itself. Each start has 30
-seconds in all, and Restart network or launching an app cancels one that IOS
-never finishes. Shutting the network down can itself hang inside IOS (libogc's
+When the network fails to start, HBC tries again by itself, or restarts with a
+fresh IOS, and it notices a network that drops while it sits idle
+([docs/using-hbc.md](../../docs/using-hbc.md#the-network)). Each start has a
+time limit, and Restart network or launching an app cancels one that IOS never
+finishes. Shutting the network down can itself hang inside IOS (libogc's
 `net_deinit` waits for a reply that never comes); if it has not returned after
-5 seconds, HBC says so for 10 seconds and then starts the installed channel
-again with a fresh IOS.
+5 seconds, the installed channel says so for 10 seconds and then starts again
+with a fresh IOS, at most 3 times in a row. HBC closes the overlay for the
+countdown with `hbc_agent_home_close()`.
 
 ### Pointer and D-pad
 

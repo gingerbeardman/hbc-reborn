@@ -232,6 +232,12 @@ static void open_ui_set(ov_ui *ui) {
 	_CPU_ISR_Restore(level);
 }
 
+// From on_frame, on the overlay's own thread: its next step starts the close.
+void hbc_agent_home_close(void) {
+	if (open_ui)
+		open_ui->closing = true;
+}
+
 int agent_overlay_state(char *buf, int size) {
 	int menu, focus, tab, page, info;
 	u32 level;
