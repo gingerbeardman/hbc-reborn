@@ -222,6 +222,54 @@ class AppRunTest(unittest.TestCase):
         self.assertTrue(self.record("Foo"))
         self.assertIn("meta.xml=h:", self.lines()[0])
 
+    def legacy(self, name, body):
+        (self.boot(name).parent / ".hbc-ran").write_bytes(body)
+
+    def legacy_v2(self, name, meta=None, icon=None):
+        """A .hbc-ran as 1.10-1.14.13 wrote it: boot.dol, boot.elf, icon.png, meta.xml."""
+        rows = []
+        for f in (self.boot(name), None, icon, meta):
+            if f is None:
+                rows.append("0 0 0 0")
+            else:
+                st = f.stat()
+                rows.append(f"1 {st.st_size} {int(st.st_mtime)} {int(st.st_ctime)}")
+        self.legacy(name, ("HBC ran 2\n" + "\n".join(rows) + "\n").encode())
+
+    def test_an_old_hbc_ran_marker_is_imported(self):
+        meta = self.set_meta("Foo", self.META % b"")
+        icon = self.boot("Foo").parent / "icon.png"
+        icon.write_bytes(b"png")
+        self.legacy_v2("Foo", meta=meta, icon=icon)
+        self.assertEqual(self.scan(["Foo", "Bar"]), {"Foo": UNCHANGED, "Bar": NEW})
+        line = self.lines()[0]  # the scan wrote it to the device's file
+        self.assertRegex(line, LINE)
+        self.assertIn(f"meta.xml={meta.stat().st_size}@{int(meta.stat().st_mtime)}", line)
+        self.assertIn(f"icon.png={icon.stat().st_size}@", line)
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+        # the old stamps still catch a change, and a launch clears it
+        os.utime(icon, (1, 1_000_000_000))
+        self.assertEqual(self.state("Foo"), UPDATED)
+        self.assertTrue(self.record("Foo"))
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+
+    def test_an_old_marker_for_a_changed_app_is_updated(self):
+        self.legacy_v2("Foo")
+        self.boot("Foo").write_bytes(b"a newer build")
+        self.assertEqual(self.state("Foo"), UPDATED)
+
+    def test_a_bare_old_marker_is_a_run_and_junk_is_ignored(self):
+        self.legacy("Foo", b"HBC ran\n")
+        self.legacy("Bar", b"something else\n1 2 3 4\n")
+        self.assertEqual(self.scan(["Foo", "Bar"]), {"Foo": UNCHANGED, "Bar": NEW})
+        self.legacy("Bar", b"HBC ran 2\n1 2 3\n")  # cut short
+        self.assertEqual(self.state("Bar"), NEW)
+
+    def test_the_device_file_wins_over_an_old_marker(self):
+        self.assertTrue(self.record("Foo"))
+        self.legacy("Foo", b"HBC ran 2\n1 1 1 1\n0 0 0 0\n0 0 0 0\n0 0 0 0\n")
+        self.assertEqual(self.state("Foo"), UNCHANGED)
+
     def match(self, caption, data, dev=None):
         out = ctypes.create_string_buffer(4096)
         ok = self.api.t_match(px(dev or self.dev), caption.encode(), data, len(data), out, len(out))

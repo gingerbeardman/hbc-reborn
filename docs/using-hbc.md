@@ -33,6 +33,10 @@ space around tags, `h:` and 8 hex digits):
 
     Wii64	boot.dol=1318128@1762104532 boot.elf=- meta.xml=h:3b38b081 icon.png=9211@1762104532
 
+An app with no line yet takes its history once from the `.hbc-ran` file
+that HBC 1.10 to 1.14.13 kept in its folder, so those apps are not all new
+after an upgrade. The old file is left where it is.
+
 A line from before 1.16.1 has `meta.xml=412@1762104532` (size and time): that
 file is judged by size and time until the app's next run rewrites the line.
 

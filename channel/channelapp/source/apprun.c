@@ -417,12 +417,67 @@ static bool table_write(void) {
 	return ok;
 }
 
+// HBC 1.10-1.14.13 kept an app's last run in apps/<name>/.hbc-ran: "HBC ran 2"
+// and a "present size modified created" line for boot.dol, boot.elf,
+// icon.png and meta.xml, in that order; or a bare "HBC ran" from before it
+// kept stamps, which counts as a run of the app as it is now. An app with no
+// record yet takes its history from there once, so an upgrade does not show
+// every app as new; the next write puts it in the device's file. meta.xml
+// comes over as size and time (no hash), the older form parse_line reads.
+static const char legacy_marker[] = ".hbc-ran";
+static const unsigned legacy_order[TRACKED_COUNT] = { 0, 1, 3, 2 };   // old line -> tracked[]
+
+static bool legacy_import(const char *name, app_stamp *stamp) {
+	char path[PATH_MAX], line[128];
+	FILE *f;
+	unsigned i;
+	bool ok = false;
+
+	if (!app_file_path(path, sizeof(path), table_root, name, legacy_marker))
+		return false;
+	f = fopen(path, "r");
+	if (!f)
+		return false;
+	if (!fgets(line, sizeof(line), f)) {
+		fclose(f);
+		return false;
+	}
+	if (!strcmp(line, "HBC ran\n") || !strcmp(line, "HBC ran")) {
+		fclose(f);
+		return snapshot(table_root, name, stamp);
+	}
+	if (strcmp(line, "HBC ran 2\n")) {
+		fclose(f);
+		return false;
+	}
+	memset(stamp, 0, sizeof(*stamp));
+	for (i = 0; i < TRACKED_COUNT; ++i) {
+		file_stamp *s = &stamp->files[legacy_order[i]];
+		int64_t created;
+
+		if (!fgets(line, sizeof(line), f) ||
+				sscanf(line, "%u %" SCNu64 " %" SCNd64 " %" SCNd64, &s->present, &s->size,
+					&s->modified, &created) != 4 || s->present > 1)
+			break;
+		if (!s->present)
+			s->size = s->modified = 0;
+	}
+	ok = i == TRACKED_COUNT && (stamp->files[0].present || stamp->files[1].present);
+	fclose(f);
+	return ok;
+}
+
 static app_run_state judge(const char *name) {
 	record *r = table_find(name);
 	app_stamp current;
 
-	if (!r)
-		return APP_RUN_NEW;
+	if (!r) {
+		app_stamp old;
+
+		if (!legacy_import(name, &old) || !(r = table_add(name, &old)))
+			return APP_RUN_NEW;
+		table_dirty = true;
+	}
 	r->seen = true;
 	// A folder that cannot be read now (a stat error, no boot file) is not
 	// "updated": app_run_record could never clear that badge.
