@@ -196,6 +196,10 @@ static volatile u32 net_ip;
 static s32 keepalive_fd = -1, probe_fd = -1;
 static u64 probe_started, probe_polled;
 #define PROBE_POLL_MS 50
+// net_accept's -ENETRESETs in a row, with no connection or -EAGAIN
+// between, that restart the network (the accept loop).
+#define ACCEPT_RESETS 3
+static u32 accept_resets;
 
 static void discover_stop(void) {
 	// The keep-alive may borrow this socket (netprobe.h): it goes too.
@@ -771,6 +775,7 @@ static void * ld_tcp_func (void *arg) {
 
 			mask = net_gethostip () & 0xffff0000;
 
+			accept_resets = 0;
 			s = BOOTLOG("tcp_listen", tcp_listen (LD_TCP_PORT, 3));
 			netdiag_event("tcp_listen %d", s);
 
@@ -871,12 +876,30 @@ static void * ld_tcp_func (void *arg) {
 			len_sa = sizeof (struct sockaddr_in);
 
 			sn = tcp_accept (s, (struct sockaddr *) &sa, &len_sa);
-			if (sn == -EAGAIN)
+			if (sn == -EAGAIN) {
+				accept_resets = 0;
 				continue;
+			}
 			if (sn < 0)
 				netdiag_event("net_accept %d", sn);
 
+			// A lone -ENETRESET keeps the listener, logged, before
+			// ACCEPT_RESETS in a row restart the network. Added in 1.16.2
+			// for a probe's error thought to leak into net_accept; on the
+			// Wii the reset about 1.2 s after an app returns came with no
+			// probe at all, and every accept then failed (docs/history/
+			// 1.16.md). It costs a few milliseconds and shows whether a
+			// reset persists.
+			if (sn == -ENETRESET && ++accept_resets < ACCEPT_RESETS) {
+				netdiag_event("net_accept -ENETRESET %u of %u: listener kept",
+					(unsigned) accept_resets, (unsigned) ACCEPT_RESETS);
+				continue;
+			}
+			if (sn >= 0)
+				accept_resets = 0;
+
 			if (sn == -ENETRESET) {
+				accept_resets = 0;
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
 				tcp_net_deinit("Network reset", &s);

@@ -44,8 +44,10 @@ void netprobe_up(u64 now, u32 ip, u32 gateway, const char *how) {
 	ka_err_run = 0;
 	misses = 0;
 	last_poll = 0;
-	next_ka = now;
-	next_probe = now;
+	// Nothing to the gateway while the link settles: a probe 1.2 s after
+	// the network came up got -ENETRESET, and so did the listener.
+	next_ka = now + millisecs_to_ticks(HBC_NETPROBE_SETTLE_MS);
+	next_probe = next_ka;
 	ip_text(a, sizeof(a), ip);
 	ip_text(g, sizeof(g), gw);
 	netdiag_event("Keep-alive: up at %s, gateway %s (%s); UDP to port %u every %u s, "

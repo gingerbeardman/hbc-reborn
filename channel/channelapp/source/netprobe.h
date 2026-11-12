@@ -59,6 +59,10 @@
 #define HBC_NETPROBE_GAP_MS 10000u
 #define HBC_NETPROBE_ERROR_LOG_MS 60000u
 #define HBC_PROBE_PORTS 3
+// After netprobe_up, the first keep-alive and probe wait this long: just
+// after an app returns, the link is still settling (1.16.1, a probe at
+// +1.2 s got -ENETRESET and reset the listener with it).
+#define HBC_NETPROBE_SETTLE_MS 5000u
 
 typedef enum {
 	KEEPALIVE_BOUND_SENDTO = 0,   // UDP bound to INADDR_ANY:HBC_KEEPALIVE_LOCAL_PORT, net_sendto

@@ -5,6 +5,7 @@ results for each version are in [docs/history/](docs/history/).
 
 ## 1.16 ([details](docs/history/1.16.md))
 
+- **1.16.2** (2026-11-12): the gateway probe and keep-alive wait 5 s after the network comes up; the network drop after an app returns is not fixed yet; libogc 3.2 refused at build time (HBC's queue wrapper breaks the Wii Remotes there)
 - **1.16.1** (2026-11-10): the Updated badge clears and fades in from the button's top edge; the start-up call log fits; the agent takes its big buffers only when used
 - **1.16.0** (2026-11-09): release; a stuck USB drive no longer holds HBC on a black screen (sdk/usbguard)
 

@@ -14,6 +14,16 @@
 #include <malloc.h>
 #include <gccore.h>
 #include <wiiuse/wiiuse.h>
+#include <ogc/libversion.h>
+
+// libogc 3.2.0 makes wiiuse_init_cmd_queue return int and gives each queue
+// its own malloc. wiiuse_init then fails on a non-zero return, which this
+// void wrapper leaves as junk: WPAD_Init fails and no Wii Remote connects
+// (HBC 1.16.1 built on 3.2.1, 2026-11-12). On 3.2, drop this file and the
+// --wrap instead of porting it.
+#if _V_MAJOR_ != 3 || _V_MINOR_ != 1
+#error "wpadqueue.c wraps libogc 3.1's void wiiuse_init_cmd_queue: see the note above"
+#endif
 
 #define SLOTS 6		// WPAD_MAX_DEVICES in libogc 3.1
 #define COMMANDS 256	// libogc's own queue length

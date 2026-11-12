@@ -115,9 +115,14 @@ int main(void) {
     assert(netprobe_poll(1000, 1, 0) == NETPROBE_NONE);
     assert(!netprobe_keepalive_sent() && !netprobe_restarts());
 
-    /* Up: the start is logged with the gateway and where it came from; a
-       probe and a keep-alive go at once. */
-    up(GW, "NCD static config");
+    /* Up: the start is logged with the gateway and where it came from.
+       Nothing goes to the gateway while the link settles (1.16.1: a probe
+       1.2 s after an app returned got -ENETRESET, and so did the
+       listener); then a probe and a keep-alive go at once. */
+    netprobe_up(now, IP, GW, "NCD static config");
+    fresh = 1;
+    run(HBC_NETPROBE_SETTLE_MS - 100, 1, 1, 1, 0, 0);
+    assert(!probes && !keepalives);
     assert(strstr(last_note, "up at 192.168.1.224, gateway 192.168.1.1 (NCD static config)"));
     assert(!strcmp(netprobe_source(), "NCD static config") && netprobe_port() == 80);
     assert(!netprobe_trusted());
@@ -133,7 +138,7 @@ int main(void) {
        the mode found first is kept even if IOS says EINVAL later. */
     einval_modes = 3;
     zero();
-    run(HBC_KEEPALIVE_PERIOD_MS * 3, 1, 1, 1, 0, 0);
+    run(HBC_KEEPALIVE_PERIOD_MS * 3 + 1000, 1, 1, 1, 0, 0);
     assert(!mode_changes && netprobe_keepalive_how() == KEEPALIVE_BOUND_SENDTO);
     /* Three EINVALs in a row, the probe answering: no restart. */
     assert(!restarts && netprobe_keepalive_errors() >= HBC_KEEPALIVE_ERRORS);
@@ -187,7 +192,9 @@ int main(void) {
     up(GW, "NCD static config");
     assert(run(120000, 0, 1, 1, 0, 1) == NETPROBE_RELAUNCH);
     assert(relaunch_time - restarted >= HBC_PROBE_RESTART_MS);
-    assert(relaunch_time - restarted < HBC_PROBE_RESTART_MS + 100);
+    /* Late by at most one missed probe: run() jumps the clock by the
+       probe's timeout, where HBC polls the probe without blocking. */
+    assert(relaunch_time - restarted < HBC_PROBE_RESTART_MS + HBC_PROBE_TIMEOUT_MS + 100);
     assert(netprobe_relaunches() == 1 && strstr(last_note, "fresh-IOS relaunch 1"));
     /* Declined (limit, or a DOL): the network restarts carry on, each with
        its own deadline (the caller declines again while over the limit). */
@@ -204,7 +211,7 @@ int main(void) {
     assert(restarts >= 2 && relaunches >= 1);
     netprobe_down();
     up(GW, "NCD static config");
-    run(1000, 1, 1, 1, 0, 0);    /* back: no deadline left */
+    run(HBC_NETPROBE_SETTLE_MS + 1000, 1, 1, 1, 0, 0);    /* back: no deadline left */
     zero();
     run(200000, 1, 1, 1, 0, 0);
     assert(!relaunches && !restarts);
@@ -212,7 +219,7 @@ int main(void) {
     /* A restart whose start keeps failing (network never up): the deadline
        still runs with up false. */
     up(GW, "NCD static config");
-    run(1000, 1, 1, 1, 0, 0);
+    run(HBC_NETPROBE_SETTLE_MS + 1000, 1, 1, 1, 0, 0);
     zero();
     assert(run(120000, 0, 1, 1, 0, 1) == NETPROBE_RESTART);
     restarted = restart_time;
@@ -223,7 +230,7 @@ int main(void) {
 
     /* A transfer clears the misses: never a restart while busy. */
     up(GW, "NCD static config");
-    run(1000, 1, 1, 1, 0, 0);
+    run(HBC_NETPROBE_SETTLE_MS + 1000, 1, 1, 1, 0, 0);
     zero();
     run(2 * HBC_PROBE_PERIOD_MS, 0, 1, 1, 0, 0);
     assert(probes == 2 && !restarts);
@@ -238,7 +245,7 @@ int main(void) {
     /* A gap in the worker's loop (a Wiiload transfer) clears them too. */
     netprobe_down();
     up(GW, "NCD static config");
-    run(1000, 1, 1, 1, 0, 0);
+    run(HBC_NETPROBE_SETTLE_MS + 1000, 1, 1, 1, 0, 0);
     zero();
     run(2 * HBC_PROBE_PERIOD_MS, 0, 1, 1, 0, 0);
     assert(probes == 2);
@@ -251,7 +258,7 @@ int main(void) {
        logged (at most once a minute), never a restart. */
     netprobe_down();
     up(GW, "NCD static config");
-    run(1000, 1, 1, 1, 0, 0);
+    run(HBC_NETPROBE_SETTLE_MS + 1000, 1, 1, 1, 0, 0);
     zero(); notes = 0;
     run(600000, 1, 0, 1, 0, 0);
     assert(!restarts && keepalives >= 19 && notes <= 11);
@@ -260,7 +267,7 @@ int main(void) {
     netprobe_down();
     up(0xc0a80401u, "derived .1, DHCP");
     zero();
-    run(5000, 0, 1, 1, 0, 0);
+    run(HBC_NETPROBE_SETTLE_MS + 5000, 0, 1, 1, 0, 0);
     assert(keepalives == 1);
     zero(); notes = 0;
     u32 errors = netprobe_keepalive_errors();
@@ -366,6 +373,7 @@ static int run(u32 ms, int einval, s32 res, int *sends, int *changes) {
 int main(void) {
     int sends = 0, changes = 0;
     netprobe_up(now, 0xc0a801e0u, 0xc0a80101u, "NCD static config");
+    now += HBC_NETPROBE_SETTLE_MS;
     assert(netprobe_keepalive_how() == KEEPALIVE_BOUND_SENDTO);
     /* Bound sendto and connected send refused, the discovery socket works:
        found within a few polls, not a period apart. */
@@ -379,6 +387,7 @@ int main(void) {
     /* Kept from then on, across a restart, even if IOS says EINVAL later. */
     netprobe_down();
     netprobe_up(now, 0xc0a801e0u, 0xc0a80101u, "NCD static config");
+    now += HBC_NETPROBE_SETTLE_MS;
     changes = 0;
     assert(run(200000, 3, 1, &sends, &changes) == 0);
     assert(!changes && netprobe_keepalive_how() == KEEPALIVE_DISCOVER_SENDTO);
