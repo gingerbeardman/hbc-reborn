@@ -221,7 +221,8 @@ static u64 probe_started, probe_polled;
 // the link held 5 through a 2.5 s hold, then went 4 at +3.03 s; the fresh
 // listener then found no address and HBC relaunched anyway, about 4 s later
 // than the hold would have. These relaunches skip the countdown
-// (net_relaunch_now): nothing on the network was usable yet.
+// (net_relaunch_now): nothing on the network was usable yet. So does a
+// fast start that failed (1.16.5).
 #define NET_SETTLE_MS 3500
 #define NET_JOIN_MS NET_SETTLE_MS   // the decision: at the end of the hold
 #define LINK_TRACE_MS 30000
@@ -306,8 +307,9 @@ static volatile bool net_relaunch_wanted;
 // The relaunch is for a silent gateway (netprobe.h): the network may well be
 // up, the relaunch still goes.
 static volatile bool net_relaunch_gateway;
-// The relaunch is for a network that never settled (net_reset_relaunch):
-// main() relaunches at once, without the countdown.
+// The relaunch is for a network that never settled (net_reset_relaunch) or
+// a fast start that failed: main() relaunches at once, without the
+// countdown.
 static volatile bool net_relaunch_now;
 
 bool loader_take_net_relaunch_now (void) {
@@ -668,8 +670,14 @@ static void link_trace (s32 link) {
 // stopped or restarted meanwhile.
 static int net_settle (void) {
 	s32 ncd, link = ncd_link_status(&ncd);
-	unsigned now = since_up_ms(), up_since = now;
+	unsigned now = since_up_ms(), up_since;
 	bool held = !link_joining(link);
+
+	// Up at the first sample: up since the start, as NET_JOIN_MS counts.
+	// From the sample instead, a check in the few ms between NET_JOIN_MS and
+	// NET_SETTLE_MS after the sample saw a link up the whole time as joining
+	// (1.16.4, 192.168.1.247: "not up 3500 ms in a row by +3504 ms", link 5).
+	up_since = held ? 0 : now;
 
 	netdiag_event("Settle: link %d (%s), listening once up %u ms in a row (at most %u ms)",
 		(int) link, netwatch_link_name(link), (unsigned) NET_SETTLE_MS, (unsigned) NET_JOIN_MS);
@@ -786,7 +794,7 @@ static void * ld_tcp_func (void *arg) {
 	u8 retries;
 	u64 init_start, attempt_start;
 	u32 budget_ms;
-	bool fast;
+	bool fast, relaunch_now;
 
 	mask = 0;
 
@@ -900,6 +908,22 @@ static void * ld_tcp_func (void *arg) {
 			if (res < 0) {
 				gprintf ("net_init failed: %d\n", res);
 				netdiag_event("INIT gave up: %d", (int) res);
+				// The installed channel's fast start failed: the fresh IOS at
+				// once, asked for before the cleanup and without the
+				// countdown (1.16.5). After an app, that cleanup hung 30 s
+				// until the watchdog, or took 11 s and was then followed by
+				// the countdown and a retry: 3 of 5 such returns on
+				// 192.168.1.224 took about 77 s, the others 58-69 s. main()
+				// leaves while the cleanup runs; loader_deinit parks a
+				// worker that is still in it.
+				relaunch_now = res != -ECANCELED && fast && !tcp_stop && !tcp_restart;
+				if (relaunch_now) {
+					hlog("Network: no connection (%d), restarting HBC\n", (int) res);
+					netdiag_event("Failed start: fresh-IOS relaunch requested, before the cleanup");
+					// Before net_relaunch_wanted: main() takes that first.
+					net_relaunch_now = true;
+					net_relaunch_wanted = true;
+				}
 				// Clean up the half-started stack before the menu's retry or
 				// the relaunch; a cancelled start is cleaned up by the
 				// restart or exit above. A cleanup that never returns goes to
@@ -909,10 +933,8 @@ static void * ld_tcp_func (void *arg) {
 					tcp_net_deinit("Failed INIT", NULL);
 				}
 				ta->state = LDTCPS_UNINITIALIZED;
-				if (res != -ECANCELED && fast && !tcp_stop && !tcp_restart) {
-					hlog("Network: no connection (%d), restarting HBC\n", (int) res);
-					netdiag_event("Failed start: fresh-IOS relaunch requested");
-					net_relaunch_wanted = true;
+				if (relaunch_now) {
+					// asked for above
 				} else if (res != -ECANCELED) {
 					hlog("Network: no connection (%d), trying again\n", (int) res);
 					if (watch_recovery)

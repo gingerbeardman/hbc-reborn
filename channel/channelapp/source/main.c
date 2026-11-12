@@ -542,9 +542,10 @@ void main_real(void) {
 			if (!can_reload) {
 				netdiag_event("Relaunch wanted, but no installed channel: backoff retries");
 			} else if (now) {
-				// The network never settled (loader.c): no countdown, and
-				// no worker retry in an IOS that will not join.
-				netdiag_event("Not settled: relaunching now");
+				// The network never settled, or a fast start failed
+				// (loader.c): no countdown, and no worker retry in an IOS
+				// that will not join.
+				netdiag_event("Relaunching now: no countdown");
 				hlog("Network: restarting HBC with a fresh IOS\n");
 				reload_hbc = reset_network_ios = network_relaunch = true;
 				should_exit = true;

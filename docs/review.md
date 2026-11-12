@@ -107,10 +107,14 @@ itself, but the return takes about 55-80 s instead of about 18 s.
 
 So an app's clean `net_deinit` doesn't prevent it. This is a different
 failure from the Wi-Fi that doesn't join (link 4), which 1.16.3 handles.
-Possible fix: a `net_init` that is still busy at its budget after an IOS
-reload could go straight to the fresh-IOS relaunch, without waiting for the
-cleanup to hang. That would save about 30 s. Trigger: a third capture, or
-HBC's log (`hbc.py log`) during one, to see where the cleanup blocks.
+
+1.16.4 on .224 (20 rounds, both Wiis at once): 5 of 20 returns, 3 with the
+cleanup hung (77 s) and 2 with it back after 11 s (58-69 s). Since 1.16.5
+the relaunch goes at once when the start gives up, before the cleanup, so
+such a return should take about 30 s. Still open: why IOS's start stays
+busy after some returns, and whether running both Wiis at once on one
+access point makes it more likely. Trigger: HBC's log (`hbc.py log`) during
+one, to see which IOS step the start waits on.
 
 ### Port 4299 goes dark for about 2.5 minutes (IOS)
 
