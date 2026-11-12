@@ -55,6 +55,8 @@ u32 loader_net_ip (void);
 // fresh-IOS relaunch (netinit.h): pending, and taken once by main().
 bool loader_net_relaunch_pending (void);
 bool loader_take_net_relaunch (void);
+// After loader_take_net_relaunch: the relaunch goes at once, no countdown.
+bool loader_take_net_relaunch_now (void);
 // Whether the relaunch taken was for a silent gateway (taken once too).
 bool loader_take_gateway_relaunch (void);
 u32 loader_tcp_stack_used (void);

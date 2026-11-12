@@ -85,6 +85,33 @@ for the replug tests (1.15.21); not seen on a Wii. Test: pull the SD card with
 an app's details open, plug it back in, then close the details.
 `tests/wii/wii_replug.py` starts on the app list, so it does not cover this.
 
+### HBC's own net_init stays busy after an app, then the cleanup hangs 30 s
+
+Seen twice on Matt's Wii (192.168.1.224) with 1.16.3+0.ga132d38.dirty, both
+times after an app went back to HBC. HBC's first `net_init` never returns
+within its 20 s budget (`Still busy` at 5, 10 and 15 s, then `INIT gave up:
+-116`). The cleanup after it never returns either. About 30 s later the main
+loop takes the hang (`Network cleanup stuck: relaunch countdown`), and the
+countdown relaunches with a fresh IOS. The next boot is clean. It recovers by
+itself, but the return takes about 55-80 s instead of about 18 s.
+
+- 2026-11-12, round of `tests/wii/wii_launch_stress.py` (`agent_app` exit):
+  79 s from launch to HBC answering. The 1.16.3 settle and join relaunch
+  never run, because `net_init` is still busy.
+- 2026-11-12, after `slicks-test` quit (log copy:
+  `/Users/matt/Projects/slicks/build/hbc-network-final.log`): `INIT gave up:
+  -116` at +20012 ms, `Network cleanup stuck` at +50025 ms, `Leaving HBC:
+  reload 1, relaunch 1` at +54258 ms. The next boot was up in 3.6 s, link 5,
+  with no link changes over 30 s. Slicks' side was clean: link 5 at exit,
+  `hbc_agent_stop` 0 in 110 ms, `net_deinit` done in 10 ms, link 5 after it.
+
+So an app's clean `net_deinit` doesn't prevent it. This is a different
+failure from the Wi-Fi that doesn't join (link 4), which 1.16.3 handles.
+Possible fix: a `net_init` that is still busy at its budget after an IOS
+reload could go straight to the fresh-IOS relaunch, without waiting for the
+cleanup to hang. That would save about 30 s. Trigger: a third capture, or
+HBC's log (`hbc.py log`) during one, to see where the cleanup blocks.
+
 ### Port 4299 goes dark for about 2.5 minutes (IOS)
 
 On real Wiis (devwii and lrwii, every HBC build including 1.16.0), IOS's TCP

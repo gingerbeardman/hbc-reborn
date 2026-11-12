@@ -5,6 +5,7 @@ results for each version are in [docs/history/](docs/history/).
 
 ## 1.16 ([details](docs/history/1.16.md))
 
+- **1.16.4** (2026-11-12): HBC holds the link 3.5 s before listening (a drop at +3 s on the second Wii got past 2.5 s); a network that never settled relaunches at once, without the countdown
 - **1.16.3** (2026-11-12): HBC listens once the link has held 2.5 s; a Wi-Fi that does not join goes straight to a fresh IOS (up to 6 in a row), so a bad return to HBC takes about 31 s instead of about 70; a reset with the link up gets a fresh listener; a 30 s link trace after each start
 - **1.16.2** (2026-11-12): the gateway probe and keep-alive wait 5 s after the network comes up; the network drop after an app returns is not fixed yet; libogc 3.2 refused at build time (HBC's queue wrapper breaks the Wii Remotes there)
 - **1.16.1** (2026-11-10): the Updated badge clears and fades in from the button's top edge; the start-up call log fits; the agent takes its big buffers only when used

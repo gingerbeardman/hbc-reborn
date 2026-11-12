@@ -511,6 +511,7 @@ void main_real(void) {
 
 			hang_pending = false;
 			loader_take_net_relaunch();
+			loader_take_net_relaunch_now();
 			loader_take_gateway_relaunch();
 			hlog("Network: a cleanup never returned\n");
 			netdiag_event("Network cleanup stuck: %s", relaunch ? "relaunch countdown" :
@@ -536,9 +537,18 @@ void main_real(void) {
 		// (netprobe.h) comes here too, with the network possibly up.
 		if (loader_take_net_relaunch()) {
 			bool gateway = loader_take_gateway_relaunch();
+			bool now = loader_take_net_relaunch_now();
 
 			if (!can_reload) {
 				netdiag_event("Relaunch wanted, but no installed channel: backoff retries");
+			} else if (now) {
+				// The network never settled (loader.c): no countdown, and
+				// no worker retry in an IOS that will not join.
+				netdiag_event("Not settled: relaunching now");
+				hlog("Network: restarting HBC with a fresh IOS\n");
+				reload_hbc = reset_network_ios = network_relaunch = true;
+				should_exit = true;
+				break;
 			} else {
 				netdiag_event(gateway ? "Silent gateway: relaunch countdown" :
 					"Failed start: relaunch countdown");

@@ -216,7 +216,13 @@ static u64 probe_started, probe_polled;
 // survive goes to the relaunch too. Where HBC may not relaunch, the old
 // Restart network. For the first LINK_TRACE_MS after each start every change
 // of the link is logged ("Link:").
-#define NET_SETTLE_MS 2500
+//
+// 3.5 s, not 2.5 s (1.16.4): on the second Wii (192.168.1.247, 2026-11-12)
+// the link held 5 through a 2.5 s hold, then went 4 at +3.03 s; the fresh
+// listener then found no address and HBC relaunched anyway, about 4 s later
+// than the hold would have. These relaunches skip the countdown
+// (net_relaunch_now): nothing on the network was usable yet.
+#define NET_SETTLE_MS 3500
 #define NET_JOIN_MS NET_SETTLE_MS   // the decision: at the end of the hold
 #define LINK_TRACE_MS 30000
 #define LINK_TRACE_POLL_MS 250
@@ -300,6 +306,20 @@ static volatile bool net_relaunch_wanted;
 // The relaunch is for a silent gateway (netprobe.h): the network may well be
 // up, the relaunch still goes.
 static volatile bool net_relaunch_gateway;
+// The relaunch is for a network that never settled (net_reset_relaunch):
+// main() relaunches at once, without the countdown.
+static volatile bool net_relaunch_now;
+
+bool loader_take_net_relaunch_now (void) {
+	u32 level;
+	bool now;
+
+	_CPU_ISR_Disable(level);
+	now = net_relaunch_now;
+	net_relaunch_now = false;
+	_CPU_ISR_Restore(level);
+	return now;
+}
 
 bool loader_take_gateway_relaunch (void) {
 	u32 level;
@@ -749,6 +769,8 @@ static bool net_reset_relaunch (s32 res) {
 	}
 	hlog("Network: not settled after starting, restarting HBC\n");
 	netdiag_event("Network not settled (%d): fresh-IOS relaunch requested", (int) res);
+	// Before net_relaunch_wanted: main() takes that first, then this.
+	net_relaunch_now = true;
 	net_relaunch_wanted = true;
 	return true;
 }
