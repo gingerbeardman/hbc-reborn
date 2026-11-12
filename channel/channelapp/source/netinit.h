@@ -30,6 +30,10 @@
 #define HBC_NET_INIT_TIMEOUT_MS 30000u
 #define HBC_NET_INIT_FAST_MS 20000u
 #define HBC_NET_FAST_RELAUNCHES 3
+// A Wi-Fi that does not join after the reload (netinit_reset_relaunch) can
+// stay that way through two or three fresh IOSes (2026-11-12, about 8 s
+// each), so its relaunches in a row get more room.
+#define HBC_NET_JOIN_RELAUNCHES 6
 // Every automatic relaunch's countdown, whatever led to it (a failed start,
 // a hung cleanup, a silent gateway): the message HBC shows before it goes.
 #define HBC_NET_RELAUNCH_COUNTDOWN_S 3
@@ -64,6 +68,12 @@ void netinit_gateway_ok(void);
 // an answer); if so the record left for it continues that run.
 // The gateway's address goes in the record so the next boot knows it answers.
 bool netinit_gateway_relaunch(u32 gateway);
+// The network reset itself just after coming up and a fresh listener did
+// not bring it back (loader.c): whether a fresh-IOS relaunch may go. Counted
+// from the relaunches that led to this boot, which the start's success does
+// not clear, so a reset after every start stops after
+// HBC_NET_JOIN_RELAUNCHES in a row.
+bool netinit_reset_relaunch(void);
 // The gateway that answered before the relaunch that led to this boot, or 0.
 u32 netinit_known_gateway(void);
 // The record to leave for the relaunch.

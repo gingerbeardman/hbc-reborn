@@ -147,6 +147,24 @@ int main(void) {
     assert(netinit_gateway_relaunch(0xc0a80101u));
     netinit_next(&rec);
     assert(rec.relaunches == 1);
+    // A reset just after the network came up, not recovered by a fresh
+    // listener (loader.c): at most HBC_NET_JOIN_RELAUNCHES relaunches in a
+    // row, though each start succeeds; an app's return starts from 0.
+    rec = (netinit_record) {0, 0, 0, 0};
+    netinit_boot(&rec);
+    for (unsigned i = 1; i <= HBC_NET_JOIN_RELAUNCHES; i++) {
+        netinit_up();
+        assert(netinit_reset_relaunch());
+        netinit_next(&rec);
+        assert(rec.relaunches == i && rec.reserved == 0);
+        netinit_boot(&rec);
+    }
+    netinit_up();
+    assert(!netinit_reset_relaunch());
+    rec = (netinit_record) {0, 0, 0, 0};
+    netinit_boot(&rec);
+    netinit_up();
+    assert(netinit_reset_relaunch());
     // A failed start's relaunch carries no gateway.
     rec = (netinit_record) {0, 0, 0, 0};
     netinit_boot(&rec);

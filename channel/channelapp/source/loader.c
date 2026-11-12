@@ -196,10 +196,37 @@ static volatile u32 net_ip;
 static s32 keepalive_fd = -1, probe_fd = -1;
 static u64 probe_started, probe_polled;
 #define PROBE_POLL_MS 50
-// net_accept's -ENETRESETs in a row, with no connection or -EAGAIN
-// between, that restart the network (the accept loop).
-#define ACCEPT_RESETS 3
-static u32 accept_resets;
+// Just after the network comes up, IOS often resets its stack once: every
+// socket then gets -ENETRESET (-126), 0.7-1.27 s after net_init returned.
+// In sd:/hbc-network.log (375 starts, 2026-11-12) it followed 26 of 26
+// starts after an app with the link still at 4 (wireless down), 65 of 320
+// with it at 5, and 4 of 22 after HBC's own relaunch. A net_deinit and
+// net_init in the same IOS never came back from it: each start then failed
+// (-116) after about 13 s, and only a fresh IOS worked.
+//
+// So the listener waits for NCD's link to have been up NET_SETTLE_MS in a
+// row from the start. A link that drops (4, wireless down, or 1, busy) in
+// that time goes to the fresh-IOS relaunch (netinit_reset_relaunch, at most
+// HBC_NET_JOIN_RELAUNCHES in a row): on 2026-11-12 such a link went 4 at
+// +60 ms, 5 for 50 ms at about +1.95 s, then stayed 4 for the 13 s left of a
+// 15 s wait, every time, and a clean exit by the app did not prevent it.
+// Only a fresh IOS fixed it, sometimes the second or third. A reset once
+// listening closes HBC's sockets, waits up to RELISTEN_LINK_MS for the link
+// and listens again (net_relisten); a reset that fresh listener does not
+// survive goes to the relaunch too. Where HBC may not relaunch, the old
+// Restart network. For the first LINK_TRACE_MS after each start every change
+// of the link is logged ("Link:").
+#define NET_SETTLE_MS 2500
+#define NET_JOIN_MS NET_SETTLE_MS   // the decision: at the end of the hold
+#define LINK_TRACE_MS 30000
+#define LINK_TRACE_POLL_MS 250
+#define RELISTEN_LINK_MS 5000
+static u64 net_up_at;
+static bool relisten_used;
+// The link trace after a start: the last state logged, the next sample.
+static s32 trace_link;
+static u32 trace_changes, trace_next_ms;
+static bool trace_done;
 
 static void discover_stop(void) {
 	// The keep-alive may borrow this socket (netprobe.h): it goes too.
@@ -584,6 +611,148 @@ static void netprobe_relaunch (void) {
 	}
 }
 
+static unsigned since_up_ms (void) {
+	return (unsigned) ticks_to_millisecs(gettime() - net_up_at);
+}
+
+enum { SETTLE_OK, SETTLE_STOPPED, SETTLE_JOINING };
+
+// The states seen while the Wi-Fi joins. Anything else (up, wired, an error,
+// or an IOS or Dolphin reporting something odd) counts as up, so a setup
+// whose link status means nothing is never held back.
+static bool link_joining (s32 link) {
+	return link == NCD_LINK_WIFI_DOWN || link == NCD_LINK_BUSY;
+}
+
+// One sample for the link trace: logs a change, and the summary once
+// LINK_TRACE_MS have passed.
+static void link_trace (s32 link) {
+	unsigned t = since_up_ms();
+
+	if (trace_done)
+		return;
+	if (link != trace_link) {
+		netdiag_event("Link: %d (%s) at +%u ms", (int) link, netwatch_link_name(link), t);
+		trace_link = link;
+		trace_changes++;
+	}
+	if (t >= LINK_TRACE_MS) {
+		netdiag_event("Link: %d (%s) at +%u ms, %u changes since the start", (int) link,
+			netwatch_link_name(link), t, (unsigned) trace_changes);
+		trace_done = true;
+	}
+}
+
+// Before listening: the link up NET_SETTLE_MS in a row, at most NET_JOIN_MS
+// after the start. SETTLE_JOINING when it never held, SETTLE_STOPPED when
+// stopped or restarted meanwhile.
+static int net_settle (void) {
+	s32 ncd, link = ncd_link_status(&ncd);
+	unsigned now = since_up_ms(), up_since = now;
+	bool held = !link_joining(link);
+
+	netdiag_event("Settle: link %d (%s), listening once up %u ms in a row (at most %u ms)",
+		(int) link, netwatch_link_name(link), (unsigned) NET_SETTLE_MS, (unsigned) NET_JOIN_MS);
+	trace_link = link;
+	for (;;) {
+		if (held && now - up_since >= NET_SETTLE_MS) {
+			if (trace_changes)
+				netdiag_event("Settle: up since +%u ms, listening at +%u ms", up_since, now);
+			return SETTLE_OK;
+		}
+		if (now >= NET_JOIN_MS) {
+			netdiag_event("Settle: link %d (%s), not up %u ms in a row by +%u ms: "
+				"the Wi-Fi did not finish joining", (int) link, netwatch_link_name(link),
+				(unsigned) NET_SETTLE_MS, now);
+			return SETTLE_JOINING;
+		}
+		if (tcp_stop || tcp_restart)
+			return SETTLE_STOPPED;
+		usleep(50 * 1000);
+		link = ncd_link_status(&ncd);
+		now = since_up_ms();
+		link_trace(link);
+		if (link_joining(link)) {
+			held = false;
+		} else if (!held) {
+			held = true;
+			up_since = now;
+		}
+	}
+}
+
+// The stack reset under the listener (see NET_SETTLE_MS): HBC's sockets
+// closed, the link waited for, and a fresh listener checked with one accept.
+// discovery: open HBCU discovery again (the start opens it itself after its
+// listener). 0 with *s listening, -ECANCELED when stopped or restarted, else
+// the error.
+static s32 net_relisten (int *s, u32 *mask, const char *why, bool discovery) {
+	struct sockaddr_in sa;
+	u32 len = sizeof(sa);
+	s32 ncd, link, res;
+	u64 start = gettime();
+	char how[48];
+
+	netdiag_event("Relisten: %s at +%u ms: closing the sockets, waiting for the link",
+		why, since_up_ms());
+	if (*s >= 0) {
+		net_close(*s);
+		*s = -1;
+	}
+	discover_stop();
+	netprobe_close();
+	for (;;) {
+		if (tcp_stop || tcp_restart)
+			return -ECANCELED;
+		link = ncd_link_status(&ncd);
+		if (!link_joining(link) || ticks_to_millisecs(gettime() - start) >= RELISTEN_LINK_MS)
+			break;
+		usleep(100 * 1000);
+	}
+	net_ios_report("Relisten");
+	*mask = net_gethostip() & 0xffff0000;
+	res = tcp_listen(LD_TCP_PORT, 3);
+	netdiag_event("Relisten: tcp_listen %d", (int) res);
+	if (res < 0)
+		return res;
+	*s = res;
+	memset(&sa, 0, sizeof(sa));
+	res = tcp_accept(*s, (struct sockaddr *) &sa, &len);
+	if (res >= 0) {
+		net_close(res);   // a client already: it tries again
+	} else if (res != -EAGAIN) {
+		netdiag_event("Relisten: the fresh listener failed too (%d)", (int) res);
+		net_close(*s);
+		*s = -1;
+		return res;
+	}
+	if (discovery) {
+		discover_fd = discover_open();
+		if (discover_fd < 0)
+			discover_fd = -1;
+	}
+	netprobe_up(gettime(), net_ip, find_gateway(net_ip, how, sizeof(how)), how);
+	netdiag_event("Relisten: listening again after %llu ms, link %d (%s)",
+		(unsigned long long) ticks_to_millisecs(gettime() - start), (int) link,
+		netwatch_link_name(link));
+	return 0;
+}
+
+// A reset that a fresh listener did not survive: the fresh-IOS relaunch if
+// HBC may (true), else false for the caller's Restart network.
+static bool net_reset_relaunch (s32 res) {
+	if (!relaunch_allowed() || !netinit_reset_relaunch()) {
+		netdiag_event("Network not settled (%d): no relaunch (%s), restarting the network",
+			(int) res, relaunch_allowed() ? "limit reached" :
+			"not the installed channel, or net-hang wait");
+		return false;
+	}
+	hlog("Network: not settled after starting, restarting HBC\n");
+	netdiag_event("Network not settled (%d): fresh-IOS relaunch requested", (int) res);
+	net_relaunch_wanted = true;
+	return true;
+}
+
 static void * ld_tcp_func (void *arg) {
 	ld_tcp_arg *ta = (ld_tcp_arg *) arg;
 	int s = -1, sn;
@@ -745,6 +914,11 @@ static void * ld_tcp_func (void *arg) {
 				netdiag_event("Network up at %s", inet_ntoa(ip));
 			}
 			net_starts++;
+			net_up_at = gettime();
+			relisten_used = false;
+			trace_changes = 0;
+			trace_next_ms = 0;
+			trace_done = false;
 			netinit_up();
 			{
 				s32 ncd, link = ncd_link_status(&ncd);
@@ -773,11 +947,41 @@ static void * ld_tcp_func (void *arg) {
 				watch_recovery = false;
 			}
 
+			res = net_settle ();
+			if (res == SETTLE_STOPPED) {
+				ta->state = LDTCPS_UNINITIALIZED;
+				continue;
+			}
+			// Never held: a fresh IOS, not a listener IOS resets.
+			if (res == SETTLE_JOINING && net_reset_relaunch(-ENETDOWN)) {
+				netrecovery_request();
+				tcp_net_deinit("Joining", NULL);
+				ta->state = LDTCPS_UNINITIALIZED;
+				continue;
+			}
+
 			mask = net_gethostip () & 0xffff0000;
 
-			accept_resets = 0;
 			s = BOOTLOG("tcp_listen", tcp_listen (LD_TCP_PORT, 3));
 			netdiag_event("tcp_listen %d", s);
+
+			if (s == -ENETRESET && !relisten_used) {
+				relisten_used = true;
+				s = -1;
+				res = net_relisten(&s, &mask, "tcp_listen -ENETRESET", false);
+				if (res == -ECANCELED) {
+					ta->state = LDTCPS_UNINITIALIZED;
+					continue;
+				}
+				if (res < 0 && net_reset_relaunch(res)) {
+					netrecovery_request();
+					tcp_net_deinit("Reset", &s);
+					ta->state = LDTCPS_UNINITIALIZED;
+					continue;
+				}
+				if (res < 0)
+					s = -ENETRESET;   // the Restart network below
+			}
 
 			if ((s == -ENETRESET) && retries) {
 				gprintf("ENETRESET, reiniting\n");
@@ -817,6 +1021,13 @@ static void * ld_tcp_func (void *arg) {
 
 			ta->cmd = LDTCPCMD_IDLE;
 			busy = devfile_progress(&name, &done, &total) != 0;
+			// The link trace for the first LINK_TRACE_MS after a start.
+			if (!trace_done && since_up_ms() >= trace_next_ms) {
+				s32 ncd;
+
+				trace_next_ms = since_up_ms() + LINK_TRACE_POLL_MS;
+				link_trace(ncd_link_status(&ncd));
+			}
 			// While idle, ask IOS whether the network is still there
 			// (netwatch.h): a few calls every few seconds.
 			if (netwatch_due(gettime())) {
@@ -876,30 +1087,30 @@ static void * ld_tcp_func (void *arg) {
 			len_sa = sizeof (struct sockaddr_in);
 
 			sn = tcp_accept (s, (struct sockaddr *) &sa, &len_sa);
-			if (sn == -EAGAIN) {
-				accept_resets = 0;
+			if (sn == -EAGAIN)
 				continue;
-			}
 			if (sn < 0)
 				netdiag_event("net_accept %d", sn);
 
-			// A lone -ENETRESET keeps the listener, logged, before
-			// ACCEPT_RESETS in a row restart the network. Added in 1.16.2
-			// for a probe's error thought to leak into net_accept; on the
-			// Wii the reset about 1.2 s after an app returns came with no
-			// probe at all, and every accept then failed (docs/history/
-			// 1.16.md). It costs a few milliseconds and shows whether a
-			// reset persists.
-			if (sn == -ENETRESET && ++accept_resets < ACCEPT_RESETS) {
-				netdiag_event("net_accept -ENETRESET %u of %u: listener kept",
-					(unsigned) accept_resets, (unsigned) ACCEPT_RESETS);
-				continue;
+			// The stack reset under the listener (NET_SETTLE_MS): once per
+			// start, a fresh listener; if that fails, the fresh-IOS
+			// relaunch; else, or a second reset, Restart network.
+			if (sn == -ENETRESET && !relisten_used) {
+				s32 res;
+
+				relisten_used = true;
+				res = net_relisten(&s, &mask, "net_accept -ENETRESET", true);
+				if (res == 0 || res == -ECANCELED)
+					continue;
+				if (net_reset_relaunch(res)) {
+					netrecovery_request();
+					tcp_net_deinit("Reset", &s);
+					ta->state = LDTCPS_UNINITIALIZED;
+					continue;
+				}
 			}
-			if (sn >= 0)
-				accept_resets = 0;
 
 			if (sn == -ENETRESET) {
-				accept_resets = 0;
 				gprintf("ENETRESET, reiniting\n");
 				netrecovery_request();
 				tcp_net_deinit("Network reset", &s);

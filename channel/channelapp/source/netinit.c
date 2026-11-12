@@ -50,6 +50,13 @@ bool netinit_gateway_relaunch(u32 gateway) {
 	return true;
 }
 
+bool netinit_reset_relaunch(void) {
+	if (boot_relaunches >= HBC_NET_JOIN_RELAUNCHES)
+		return false;
+	streak = boot_relaunches;
+	return true;
+}
+
 u32 netinit_known_gateway(void) {
 	return boot_gateway;
 }

@@ -7,7 +7,7 @@ Each round sends tests/apps/agent_app/agent_app.dol with "exit", waits for HBC t
 answer again, then lists sd:/ and reads HBC's status. It stops at the first
 round that fails and says which step.
 
-    python tests/wii/wii_launch_stress.py [--rounds N] [--hbc DOL]
+    python tests/wii/wii_launch_stress.py [--rounds N] [--hbc DOL] [--back-s S]
 
 --hbc sends that HBC DOL before every round: an app's exit goes back to the
 installed channel, so each launch is then made by the sent build.
@@ -29,6 +29,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=25)
     ap.add_argument("--hbc")
+    ap.add_argument("--back-s", type=int, default=90,
+                    help="how long HBC may take to answer after a launch (a network relaunch is slow)")
     a = ap.parse_args()
     wii = os.environ.get("WII_BENCH_IP") or os.environ["HBC_WII"]
     app = str(root / "tests/apps/agent_app/agent_app.dol")
@@ -46,12 +48,12 @@ def main():
                 except (OSError, hbc.HBCError):
                     pass  # HBC itself: the send times out but loads
                 time.sleep(3)
-                hbc.hbc_wait(wii, 90)
+                hbc.hbc_wait(wii, a.back_s)
             step = "send"
             hbc.send(wii, app, ["exit"])
             time.sleep(3)  # HBC answers for a moment before the app starts
             step = "back"
-            v = hbc.hbc_wait(wii, 90)
+            v = hbc.hbc_wait(wii, a.back_s)
             step = "sd"
             sd = len(hbc.list_dir(wii, "sd:/")[0])
             step = "status"
