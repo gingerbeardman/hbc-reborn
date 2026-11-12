@@ -5,6 +5,7 @@ results for each version are in [docs/history/](docs/history/).
 
 ## 1.16 ([details](docs/history/1.16.md))
 
+- **1.16.6** (2026-11-12): a network start after an app gets 8 s, not 20 s, before the fresh-IOS relaunch (a start that never finishes followed 1 in 4 returns on one Wii)
 - **1.16.5** (2026-11-12): a network start that fails after an app relaunches at once, before its cleanup and without the countdown (about 77 s down to about 30 s); the settle hold no longer fails a link that was up the whole time
 - **1.16.4** (2026-11-12): HBC holds the link 3.5 s before listening (a drop at +3 s on the second Wii got past 2.5 s); a network that never settled relaunches at once, without the countdown
 - **1.16.3** (2026-11-12): HBC listens once the link has held 2.5 s; a Wi-Fi that does not join goes straight to a fresh IOS (up to 6 in a row), so a bad return to HBC takes about 31 s instead of about 70; a reset with the link up gets a fresh listener; a 30 s link trace after each start

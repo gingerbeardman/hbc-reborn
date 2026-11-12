@@ -28,7 +28,12 @@
 #include <gctypes.h>
 
 #define HBC_NET_INIT_TIMEOUT_MS 30000u
-#define HBC_NET_INIT_FAST_MS 20000u
+// 8 s, not 20 s (1.16.6): on 192.168.1.224 a start that IOS never finishes
+// followed 5 of 20 returns (1.16.5, 2026-11-12), each already busy at 5 s.
+// Of about 900 starts that worked in both Wiis' logs, 10 took over 8 s
+// (the slowest 14.4 s) and 3 over 10 s; a relaunch costs those about 6 s,
+// and saves about 12 s on every start that would never have finished.
+#define HBC_NET_INIT_FAST_MS 8000u
 #define HBC_NET_FAST_RELAUNCHES 3
 // A Wi-Fi that does not join after the reload (netinit_reset_relaunch) can
 // stay that way through two or three fresh IOSes (2026-11-12, about 8 s

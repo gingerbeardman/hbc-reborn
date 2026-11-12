@@ -91,12 +91,18 @@ int main(void) {
     assert(netinit_wait(0, HBC_NET_INIT_TIMEOUT_MS, 12, &stop, &restart) == -ETIMEDOUT);
     assert(now == 30000 && sleeps == 1);
     // Fast (the installed channel's first relaunches): a start IOS keeps
-    // busy ends at the shorter budget, and the slowest start seen still fits.
+    // busy ends at the shorter budget. Since 1.16.6 that is 8 s, so the
+    // slowest start seen goes to the relaunch there, and still fits the
+    // full budget.
     reset(0);
     assert(netinit_wait(0, HBC_NET_INIT_FAST_MS, 1, &stop, &restart) == -ETIMEDOUT);
     assert(now == HBC_NET_INIT_FAST_MS);
+    assert(HBC_NET_INIT_FAST_MS == 8000);
     reset(5);
-    assert(netinit_wait(0, HBC_NET_INIT_FAST_MS, 1, &stop, &restart) == 0 && now == 13300);
+    assert(netinit_wait(0, HBC_NET_INIT_FAST_MS, 1, &stop, &restart) == -ETIMEDOUT);
+    assert(now == HBC_NET_INIT_FAST_MS);
+    reset(5);
+    assert(netinit_wait(0, HBC_NET_INIT_TIMEOUT_MS, 1, &stop, &restart) == 0 && now == 13300);
     // Fast: libogc's timeout goes to the relaunch; EAGAIN still retries.
     assert(netinit_retry(-EAGAIN, true) && netinit_retry(-EAGAIN, false));
     assert(netinit_retry(-ETIMEDOUT, false) && !netinit_retry(-ETIMEDOUT, true));
